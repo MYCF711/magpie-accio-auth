@@ -89,6 +89,22 @@ https://www.accio-ai.com/login?return_url=http%3A%2F%2F127.0.0.1%3A51918%2Fauth%
 ⇒ `prompts` 被宿主正确渲染；`authorize()` 在宿主里能立刻返回一个完整的 loopback 回调 URL
 （`return_url` 端口 51918 是本进程起的一次性回调服务）。
 
+### 2.3 装进正式实例（magpie 0.1.1978，真实 config）
+
+```
+$ magpie plugin add 'D:\主工作区\projects\magpie-accio-auth'
+✓ added D:\主工作区\projects\magpie-accio-auth
+…
+D:\主工作区\projects\magpie-accio-auth (Accio 0.1.0)  on
+  accio (Accio, 15 models)  not signed in · magpie plugin login accio
+```
+
+- `magpie` 会检测 `plugins.json` 变化并**只重启 plugin host**（`internal/plugin/store.go` 的
+  `checkList` / `hostStale`），不需要重启整个进程，网关不中断。
+- 未登录时 `/v1/models` 里没有 accio 的模型（magpie 只列已登录 provider 的模型），
+  所以此时请求 `accio/<model>` 会得到 `magpie knows no model` —— 这是宿主行为，不是插件缺陷。
+- **尚未验证的一步**：真实登录后的模型目录与一次真实对话。它需要账号验证码，只能由使用者本人完成。
+
 ---
 
 ## 3 · 续期
