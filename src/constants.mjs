@@ -60,6 +60,9 @@ export const INVITE_COMMIT_PATH = "/api/invitation/commit"
 
 /** 邀请链接的参数名（与官方分享链接逐字一致：`?ic=…&tenant=accio&src=p_referral_…&source=invite_center`） */
 export const INVITE_PARAM = "ic"
+
+/** 官方分享链接里的分享 id（`sId`，URL 编码前的 base64）—— 缺了邀请关系可能不成立 */
+export const INVITE_SID_PARAM = "sId"
 export const INVITE_SOURCE = "invite_center"
 
 /** 本地 loopback 回调路径 */

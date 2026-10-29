@@ -484,3 +484,34 @@ credentials.enc: "v10" + nonce(12) + ciphertext + tag(16)    ← AES-256-GCM
 
 ⚠ 无头浏览器启动用 `--remote-debugging-port=0`，从 stderr 的 `DevTools listening on ws://127.0.0.1:<port>/` 读端口；
 自己猜端口（9300+随机）在 Windows 上会撞保留端口段，起不来且不报原因。
+
+
+### 12.8 邀请链接的完整参数（0.1.7 修正）
+
+官方分享链接（实测）：
+
+```
+https://www.accio-ai.com/login?sId=hKVFtOhL8IqKglYysM8tGA%3D%3D&ic=IC624891464548
+  &tenant=accio&src=p_referral_IC624891464548&source=invite_center
+```
+
+0.1.4–0.1.6 只带了 `ic / tenant / src / source`，**漏了 `sId`** —— 它与 `ic` 是一对，
+不能单带一个。0.1.7 起策略里成对存 `{code, sid}`，`buildAuthUrl()` 同时输出两者：
+
+```
+…&ic=IC624891464548&tenant=accio&src=p_referral_IC624891464548&source=invite_center&sId=hKVFtOhL8IqKglYysM8tGA%3D%3D
+```
+
+⚠ 换码规则：`sId` 属于某个具体的 `ic`。用户临时填新码时**不能**沿用旧 `sId`
+（`index.mjs` 里 `inviteSid = code === readInviteCode() ? readInviteSid() : ""`）。
+
+**关于「邀请奖励」和「注册体验积分」的区分**（上一版说错过）：
+
+| 项 | 值 | 来源 |
+|---|---|---|
+| `referral` 桶 | 500，11-05 过期 | **注册体验积分**，与邀请无关 |
+| 邀请奖励 | 认证 +200 / 订阅 +1,000（双方） | 需要被邀请人真的走链接并完成动作 |
+| 累计邀请人数 / 获得 Credits | 0 | `/invite` 页面的统计，插件读不到 |
+
+`/api/invitation/*` 下试过 8 个候选路径全部 404；客户端 asar 的 API 表里只有
+`invitationQuery`（布尔）与 `invitationCommit`。邀请中心的统计来自 web 前端的另一个后端。
