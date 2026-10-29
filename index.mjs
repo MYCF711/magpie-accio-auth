@@ -52,6 +52,7 @@ import { SignInError, commitInvitation, fetchCatalog, fetchInvitation, fetchUser
 import { FALLBACK_ENTRIES, liveModels, makeIndex, staticModels } from "./src/models.mjs"
 import { chat } from "./src/chat.mjs"
 import { accountKeyOf, readMagpieAuthSlots, readModels, utdid, writeModels } from "./src/store.mjs"
+import { importDesktopLogin } from "./src/desktop.mjs"
 
 /** 内嵌图标（自绘 SVG，13 行；不引用厂商素材）。`package.json` 的 `magpie.icon` 是同一份。 */
 /**
@@ -195,6 +196,58 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
                   }
                 } catch (e) {
                   return { type: "failed", error: String(e?.message ?? e).slice(0, 500) }
+                }
+              },
+            }
+          },
+        },
+        {
+          /**
+           * 从本机 Windows 客户端导入 —— 免登录、免滑块。
+           *
+           * 官方客户端登录后把 accessToken / refreshToken / expiresAt / sgcookie 写在
+           * `%APPDATA%\Accio\credentials.enc`（Chromium OSCrypt v10，DPAPI 保护）。
+           * 它与网站 OAuth 是**同一套 token**，所以直接拿来就能用（详见 src/desktop.mjs 头）。
+           *
+           * 没有客户端 / 客户端没登录 / 凭据过期 → 明确报错，让用户走网页登录。
+           */
+          type: "oauth",
+          label: "从本机 Accio 客户端导入（免登录）",
+          async authorize() {
+            return {
+              // 不需要浏览器：契约要求 url，标记 opened 让 magpie 别再开
+              url: LOGIN_BASE_CN,
+              opened: true,
+              method: "auto",
+              instructions: "正在读取本机 Accio 客户端的登录态…",
+
+              async callback() {
+                try {
+                  const got = importDesktopLogin()
+                  if (!got) {
+                    return {
+                      type: "failed",
+                      error: "没找到本机 Accio 客户端的登录态。先在「Accio」客户端里登录一次，再回来点这个；没有客户端就用「登录 Accio」。",
+                    }
+                  }
+                  // 用导入的 token 真打一次 userinfo：既验证凭据可用，也顺手拿账号名
+                  const info = await fetchUserInfo(got.credential).catch(() => null)
+                  if (!info?.userId) {
+                    return {
+                      type: "failed",
+                      error: "读到了客户端凭据，但它已经失效（userinfo 取不到账号）——请在客户端重新登录一次再试。",
+                    }
+                  }
+                  return {
+                    type: "success",
+                    access: JSON.stringify(got.credential),
+                    refresh: got.credential.refresh_token,
+                    expires: expiryMs(got.credential),
+                    accountId: accountLabelOf(info),
+                    uid: identityOf(got.credential),
+                  }
+                } catch (e) {
+                  return { type: "failed", error: `读取客户端登录态失败：${String(e?.message ?? e).slice(0, 300)}` }
                 }
               },
             }
