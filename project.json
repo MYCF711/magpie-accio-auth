@@ -1,0 +1,13 @@
+{
+ "id": "magpie-accio-auth",
+ "name": "magpie-accio-auth",
+ "type": "code",
+ "status": "active",
+ "path": "projects\magpie-accio-auth",
+ "createdAt": "2026-10-29",
+ "lastActiveAt": "2026-10-29",
+ "summary": "magpie/OpenCode 供应商插件：把阿里 Accio Work 的订阅接进 magpie（Qwen/GLM/DeepSeek/MiniMax/Kimi，积分桶 + 倍率）。",
+ "entry": "README.md",
+ "hindsightBank": "coding-agent::magpie-accio-auth",
+ "notes": "按 magpie-plugin-scaffold 的九项钩子实现；协议实现来自 Gyl1219/magpie-providers-hub 的 src/accio.mjs（MIT）。"
+}
