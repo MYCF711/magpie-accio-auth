@@ -194,3 +194,17 @@ export function toStored(cred, prev) {
 export function tokenFingerprint(cred) {
   return `${cred?.access_token ?? ""}::${cred?.refresh_token ?? ""}`
 }
+
+/**
+ * 卡片上显示的账号名 —— 官方 `/api/auth/userinfo` 的优先级：
+ *   手机号（`+86 138****8000` → 去掉 `+86 `，与其它供应商一致）
+ *   → 邮箱 → `userId` → 空串（空串让卡片回退到供应商名，**不编造**）。
+ */
+export function accountLabelOf(info) {
+  if (!info) return ""
+  const mobile = String(info.maskedMobile ?? "").trim()
+  if (mobile) return mobile.replace(/^\+?86\s*/, "")
+  const mail = String(info.email ?? info.desensitizedEmail ?? "").trim()
+  if (mail) return mail
+  return String(info.userId ?? "").trim()
+}

@@ -26,9 +26,12 @@
 import {
   CATALOG_PATH,
   GATEWAY,
+  INVITE_COMMIT_PATH,
+  INVITE_QUERY_PATH,
   QUOTA_PATH,
   REQUEST_TIMEOUT_MS,
   SUBSCRIPTION_PATH,
+  USERINFO_PATH,
 } from "./constants.mjs"
 import { parseCatalog } from "./models.mjs"
 import { usage as buildUsage, usageWindow } from "./quota.mjs"
@@ -60,6 +63,59 @@ function unwrap(path, status, text) {
     throw new Error(`Accio ${path} 失败（${code || status} ${String(body?.message ?? "")}）`.trim())
   }
   return body?.data
+}
+
+/**
+ * 当前账号：`POST /api/auth/userinfo`，**token 在 body 的 `accessToken`**。
+ *
+ * 实测（2026-10-29，真实 token）：
+ *   POST {"accessToken":"…"} → 200 {"success":true,"code":"200","data":{
+ *     userId:"1798171953", accioId:"4500118477724", userName:"Accio User",
+ *     email:null, maskedMobile:"+86 138****8000", mobileBound:true,
+ *     needBindMobile:false, userLevel:"freeMember", routeRegion:"CN" }}
+ *   ⚠ 参数名不是 `token`：放 `token` 会得到 200 + {"code":"400","message":"accessToken accessToken is null"}
+ *   ⚠ 只接受 POST：GET / Authorization 头都是 405。
+ */
+export async function fetchUserInfo(credential) {
+  const res = await fetchWithRetry(() => fetch(`${GATEWAY}${USERINFO_PATH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ accessToken: credential.access_token }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  }))
+  const text = await res.text()
+  const data = unwrap(USERINFO_PATH, res.status, text)
+  return data ?? {}
+}
+
+/** 邀请关系是否已绑定（`data` 是布尔）。token 同样在 body 的 `accessToken`。 */
+export async function fetchInvitation(credential) {
+  const res = await fetchWithRetry(() => fetch(`${GATEWAY}${INVITE_QUERY_PATH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ accessToken: credential.access_token }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  }))
+  const text = await res.text()
+  const data = unwrap(INVITE_QUERY_PATH, res.status, text)
+  return data === true
+}
+
+/**
+ * 提交邀请码：`POST /api/invitation/commit`，body `{accessToken, code}`。
+ *
+ * 参数名 `code` 来自官方客户端（asar 里 `Oh(km.invitationCommit, { code: n })`），
+ * 不是 `invitationCode` —— 后者只是客户端本地 HTTP 服务的入参名。
+ */
+export async function commitInvitation(credential, code) {
+  const res = await fetchWithRetry(() => fetch(`${GATEWAY}${INVITE_COMMIT_PATH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ accessToken: credential.access_token, code }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  }))
+  const text = await res.text()
+  return unwrap(INVITE_COMMIT_PATH, res.status, text) ?? {}
 }
 
 /** 模型目录：`POST /api/llm/config/v2`，token 在 body。 */

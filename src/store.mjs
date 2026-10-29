@@ -30,6 +30,27 @@ export function fileOf(kind, { account } = {}) {
   return join(cacheDir(), name)
 }
 
+/**
+ * 只读 magpie 的账号槽 `~/.config/magpie/plugin-auth.json`。
+ *
+ * ⚠ 这里**只读**：写入是 magpie 的事，插件抄一份就会出现两个刷新者。
+ *   用途只有一个 —— 「邀请码」这个登录方式拿不到 getAuth()，只能从槽里找当前账号。
+ */
+export function magpieConfigDir() {
+  return join(homedir(), ".config", "magpie")
+}
+
+export function readMagpieAuthSlots(provider) {
+  try {
+    const obj = JSON.parse(readFileSync(join(magpieConfigDir(), "plugin-auth.json"), "utf8"))
+    return Object.entries(obj || {})
+      .filter(([key]) => key === provider || key.startsWith(`${provider}#`))
+      .map(([key, value]) => ({ key, value }))
+  } catch {
+    return []
+  }
+}
+
 function readJson(file, fallback = null) {
   try {
     const v = JSON.parse(readFileSync(file, "utf8"))

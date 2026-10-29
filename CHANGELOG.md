@@ -2,6 +2,17 @@
 
 一条一行，说用户能感知的变化。发版流程见 magpie-plugin-scaffold 的 `UPDATING.md`（七步，`git push` 只是第 4 步）。
 
+## 0.1.2 — 2026-10-29
+
+- **卡片上显示手机号 / 邮箱** —— 登录后用官方 `/api/auth/userinfo` 取 `maskedMobile`（邮箱账号是邮箱），
+  不再是一张只有「Signed in」的卡。
+- **邀请码** —— 登录流程多一个可选输入框：新账号注册时按官方分享链接的 `?ic=…&tenant=accio&src=p_referral_…&source=invite_center`
+  建立邀请关系；另有「Accio 邀请码」登录方式，给已登录账号补绑（`/api/invitation/commit`，参数名 `code`）。
+- **邀请状态查询** —— `/api/invitation/query` 返回本账号是否已绑定邀请关系。
+
+> 接口形状来自官方 Windows 客户端 `app.asar` 里的 API 表（`userInfo` / `invitationQuery` / `invitationCommit`），
+> 并用真实 token 在 `phoenix-gw.alibaba.com` 上验过。
+
 ## 0.1.1 — 2026-10-29
 
 从 Gyl1219/magpie-providers-hub 的实测记录里吸收的五处改进（来源见 NOTICE）：

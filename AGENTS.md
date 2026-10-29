@@ -63,6 +63,8 @@ node ../magpie-plugin-scaffold/scripts/check-magpie-stable.mjs
 | 18 | 长对话跑一半被掐断 / 长思考模型总是超时 | **不要在 `chat` 里挂硬超时** —— magpie 的 `signal` 管取消；30s / 120s 都会掐断长对话 | internals §11 |
 | 19 | 凭据明明过期却一直拿死 token 打上游 | 过期时间是日期字符串时不能 `Number()`（NaN 会判「永不过期」）；统一走 `accioExpiresAtMs` | internals §11 |
 | 20 | 本地目录装的插件，改了代码但 magpie 里行为还是旧的 | 本地路径 spec **不会远程更新**，也不看 git；要 `magpie plugin off <spec>` + `on <spec>` 重载，或重启 magpie | internals §11 |
+| 21 | 账号卡片只有「Signed in」，看不出是哪个号 | 官方 `POST /api/auth/userinfo` body 必须是 `{"accessToken":…}`（放 `token` 回 400；GET/Authorization 回 405）；`maskedMobile` 就是卡片名 | internals §12.2 |
+| 22 | 邀请码填了但上级没拿到奖励 | 新号的邀请关系只能在**登录 URL** 上带 `?ic=…&tenant=accio&src=p_referral_…&source=invite_center`；`/api/invitation/commit` 的字段名是 `code`，不是 `invitationCode` | internals §12.3 |
 
 ---
 

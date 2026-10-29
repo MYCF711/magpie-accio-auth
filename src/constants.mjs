@@ -49,6 +49,19 @@ export const SUBSCRIPTION_PATH = "/api/entitlement/currentSubscription"
 /** 额度：每日刷新倒计时（`refreshCountdownSeconds`） */
 export const QUOTA_PATH = "/api/entitlement/quota"
 
+/** 当前账号（`{accessToken}` 放 body）—— 官方客户端用它显示「谁登录着」 */
+export const USERINFO_PATH = "/api/auth/userinfo"
+
+/** 邀请关系查询（`{accessToken}` 放 body，`data` 是布尔） */
+export const INVITE_QUERY_PATH = "/api/invitation/query"
+
+/** 提交邀请码（`{accessToken, code}` 放 body）—— 官方客户端「邀请中心」的绑定接口 */
+export const INVITE_COMMIT_PATH = "/api/invitation/commit"
+
+/** 邀请链接的参数名（与官方分享链接逐字一致：`?ic=…&tenant=accio&src=p_referral_…&source=invite_center`） */
+export const INVITE_PARAM = "ic"
+export const INVITE_SOURCE = "invite_center"
+
 /** 本地 loopback 回调路径 */
 export const CALLBACK_PATH = "/auth/callback"
 
