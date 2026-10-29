@@ -139,6 +139,7 @@ src/api.mjs         模型目录、额度（信封判据只在这里定义一次
 src/models.mjs      slug ↔ modelCode、模型条目字段、兜底表
 src/chat.mjs        OpenAI ⇄ Accio 双向转换（信封 + SSE）
 src/transport.mjs   传输级重试（只重试连接类错误）
+src/desktop.mjs     本机 Accio 客户端登录态导入（DPAPI + AES-GCM）
 src/store.mjs       utdid、每账号目录快照（只写 ~/.cache/magpie）
 src/quota.mjs       额度窗口构造器（写错直接抛）
 ```

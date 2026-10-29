@@ -392,3 +392,41 @@ https://www.accio-ai.com/login?sId=hKVFtOhL8IqKglYysM8tGA%3D%3D&ic=IC62489146454
 
 尚未打通：登录页的「先填邮箱 → 点登录 → 出现发送验证码」这一段在 CDP 里还没跑通（原生 click 与 `Input.insertText` 都没让 React 表单进入下一步）。
 下一步方向：用 `Input.dispatchKeyEvent` 逐字键入 + 真实鼠标点击，或改用 `Page.addScriptToEvaluateOnNewDocument` 注入 React 兼容的输入。
+
+
+### 12.5 从本机客户端导入（免登录，0.1.3）
+
+官方 Windows 客户端（Electron 41，`E:\Accio`）把当前账号写在
+`%APPDATA%\Accio\credentials.enc`，格式与 Chromium 的 OSCrypt 一致：
+
+```
+Local State: os_crypt.encrypted_key = base64("DPAPI" + DPAPI(32-byte AES key))
+credentials.enc: "v10" + nonce(12) + ciphertext + tag(16)    ← AES-256-GCM
+```
+
+解密后的结构（实测本机）：
+
+```json
+{
+  "accessToken": "…32 字符…",
+  "refreshToken": "…128 字符…",
+  "expiresAt": 1795839590000,
+  "sgcookie": "…112 字符…",
+  "user": {
+    "id": "1798171953", "name": "Accio User", "accioId": "4500118477724",
+    "mobileBound": true, "needBindMobile": false, "userLevel": "freeMember",
+    "routeRegion": "CN", "maskedMobile": "+86 189****8051", "activeTeam": null
+  },
+  "revision": 1
+}
+```
+
+- 字段名与插件的凭据完全对应（`accessToken→access_token`、`expiresAt` 已是毫秒）。
+- 用这份 token 调 `/api/auth/userinfo` 能取到同一个账号（`userId 1798171953`）——
+  证明**客户端与网站 OAuth 是同一套 token**。
+- DPAPI 借 PowerShell 的 `ProtectedData.Unprotect` 解 32 字节 key（约 0.3 秒，仅 Windows）。
+- 限制：只在 Windows 生效；客户端未安装 / 未登录 → 方法明确失败并提示走网页登录。
+- ⚠ 解出的 token 只交给 magpie 的账号槽，**不写插件缓存**。
+
+实测：`importDesktopLogin()` → `{tokenLen:32, refreshLen:128, expires:1795839590000, user:"+86 189****8051"}`；
+方法 callback → `{type:"success", accountId:"189****8051", expires:1795839590000}`。

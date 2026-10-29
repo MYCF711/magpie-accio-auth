@@ -2,6 +2,13 @@
 
 一条一行，说用户能感知的变化。发版流程见 magpie-plugin-scaffold 的 `UPDATING.md`（七步，`git push` 只是第 4 步）。
 
+## 0.1.3 — 2026-10-29
+
+- **从本机 Accio 客户端导入（免登录）** —— 装了官方 Windows 客户端并登录过的话，点这一项就够了：
+  插件从 `%APPDATA%\Accio\credentials.enc` 解出 `accessToken / refreshToken / expiresAt / sgcookie`，
+  连账号卡片上的手机号一起带过来。不跳浏览器、不过滑块。
+  （Chromium OSCrypt v10 + DPAPI，详见 `src/desktop.mjs` 与 internals §12.5。）
+
 ## 0.1.2 — 2026-10-29
 
 - **卡片上显示手机号 / 邮箱** —— 登录后用官方 `/api/auth/userinfo` 取 `maskedMobile`（邮箱账号是邮箱），
