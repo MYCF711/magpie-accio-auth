@@ -303,3 +303,92 @@ Accio 的换码 / 续期响应只有两个 token + 过期时间，没有账号�
 | 重复登录仍有效账号「不覆盖原槽」 | 需要稳定的账号 id；Accio 不返回账号名/邮箱/uid，`uid` 只能从 JWT sub 取，取不到时是 refresh_token 哈希（重登会变）。没有可靠判据时宁可不猜 |
 | `shared.mjs` 的 `assignExpiryBands` 滚动指针分档 | hub 的 AGENTS §1 明确写着：**accio 属于「余额/重置型」，不下发作废时间，滚动指针不适用**。本插件按三桶（每日/每月/推荐）+ 每日刷新时刻显示 |
 | `chat` 的第二参 `{body, signal, renew}` 约定 | 那是 hub 聚合层的内部接口；magpie 的插件契约是 `loader().fetch(input, init)`，我们已经按 magpie 的接口实现 |
+
+
+---
+
+## 12 · 账号信息与邀请（2026-10-29 真机）
+
+### 12.1 网站登录态 vs 客户端登录态：同一套 token
+
+Accio 国内版客户端（Electron 41，`E:\Accio`，数据目录 `%APPDATA%\Accio`）的登录态与网站 OAuth **完全同源**：
+
+| | 网站（本插件） | Windows 客户端 |
+|---|---|---|
+| 换 token | `POST /api/oauth/token`（PKCE） | 同一个 `/api/oauth/token`（客户端打开同一个登录页） |
+| 调 API | `phoenix-gw.alibaba.com` + `access_token` | 同一个网关、同一个 `access_token` |
+| 用户信息 | `POST /api/auth/userinfo` `{accessToken}` | 同一个接口（asar 里 `userInfo:"/api/auth/userinfo"`） |
+
+⇒ **网站上 OAuth 拿到的 token 就是客户端能用的全部凭据**，不需要读客户端的 cookie / DPAPI。
+客户端的 `remembered-accounts.json`（明文）只是它自己的展示缓存，插件不依赖它。
+
+### 12.2 `/api/auth/userinfo`（官方客户端 API 表里的 `userInfo`）
+
+```
+POST https://phoenix-gw.alibaba.com/api/auth/userinfo
+Content-Type: application/json
+
+{"accessToken":"acc01_live_…"}
+```
+
+实测返回（本机真实账号）：
+
+```json
+{"success":true,"code":"200","message":"0","data":{
+  "userId":"1798171953","accioId":"4500118477724","userName":"Accio User",
+  "email":null,"portraitPath":null,"mobileBound":true,"needBindMobile":false,
+  "userLevel":"freeMember","desensitizedEmail":null,"originalAliId":null,
+  "originalAccountId":null,"routeRegion":"CN",
+  "maskedMobile":"+86 189****8051","bindSiteCodeList":null,"activeTeam":null}}
+```
+
+- ⚠ **参数名是 `accessToken`**（不是 `token`）：放 `token` → HTTP 200 + `{"code":"400","message":"accessToken accessToken is null"}`。
+- ⚠ **只接受 POST**：GET / `Authorization` 头都是 405。
+- 卡片显示取 `maskedMobile`（去掉 `+86 `）→ `email` / `desensitizedEmail` → `userId` → 空串。
+
+### 12.3 邀请（官方客户端「邀请中心」）
+
+官方分享链接的形状（实测，来自账号自己的分享）：
+
+```
+https://www.accio-ai.com/login?sId=hKVFtOhL8IqKglYysM8tGA%3D%3D&ic=IC624891464548
+  &tenant=accio&src=p_referral_IC624891464548&source=invite_center
+```
+
+- `ic` = 邀请码；`src=p_referral_<邀请码>`、`source=invite_center` 是来源标记。
+- 登录页把它记在会话里，**新账号注册完成即建立邀请关系** —— 所以必须在登录 URL 上带，事后补不了（补的是另一个接口，见下）。
+
+客户端 asar 的 API 表（`km` 对象，逐字）：
+
+```js
+{ refreshToken:"/api/auth/refresh_token", accountSwitchSafeRefreshToken:"/api/auth/safe/refresh_token",
+  logout:"/api/auth/logout", userInfo:"/api/auth/userinfo", entitlementQuota:"/api/entitlement/quota",
+  invitationQuery:"/api/invitation/query", invitationCommit:"/api/invitation/commit",
+  diamondConfig:"/api/entitlement/config", authFeeLink:"/api/entitlement/authFeeLink",
+  showTips:"/api/entitlement/showTips", mobileBindGetStatus:"/api/mobileBind/getStatus",
+  mobileBindSendCode:"/api/mobileBind/sendCode", mobileBindBind:"/api/mobileBind/bindForLogin",
+  tokenExchange:"/api/oauth/token" }
+```
+
+| 接口 | 方法 | body | 响应 |
+|---|---|---|---|
+| `/api/invitation/query` | POST | `{accessToken}` | `{"success":true,"code":"200","data":true}`（布尔：本账号是否已有邀请关系） |
+| `/api/invitation/commit` | POST | `{accessToken, code:"IC…"}` | `{"success":true,"code":"200","data":{...}}` |
+
+⚠ `commit` 的字段名是 **`code`** —— asar 调用点：`Oh(km.invitationCommit, { code: n })`。
+客户端本地 HTTP 服务的入参叫 `invitationCode`，那是另一层，别混。
+
+### 12.4 内置登录（进行中）
+
+已打通：
+
+- `msedge.exe --headless=new --remote-debugging-port` + CDP 能打开 `www.accio-ai.com/login`，标题 `Login to Accio`。
+- 登录页的两个真实接口（浏览器里抓到）：
+  - `POST https://login.accio-ai.com/saml/route/check` `{email, returnUrl, deviceId, agreementIds, sourceType}`
+  - `POST https://login.accio-ai.com/integrated/captcha/token` `{email, deviceId, identifierType}`
+- 触发风控时弹的是**阿里 NC 滑块**（`#nc_1_n1z` 42×30，轨道 `#nc_1_n1t`），在 `baxia-dialog-content` iframe 里，
+  frame 内坐标要加 iframe 偏移（实测 iframe 420×320 位于 (36,249)，handle 中心 (119,466)）。
+- 轨迹必须拟人：`linhuai777/accio2api` 的 `_human_drag` = 起手停 0.3s → 按下停 0.35s → 40 步 × 18ms 匀速（y ±0.5px 抖动）→ 停 0.38s → 松手；贝塞尔版实测被拒。
+
+尚未打通：登录页的「先填邮箱 → 点登录 → 出现发送验证码」这一段在 CDP 里还没跑通（原生 click 与 `Input.insertText` 都没让 React 表单进入下一步）。
+下一步方向：用 `Input.dispatchKeyEvent` 逐字键入 + 真实鼠标点击，或改用 `Page.addScriptToEvaluateOnNewDocument` 注入 React 兼容的输入。

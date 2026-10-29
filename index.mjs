@@ -40,19 +40,31 @@
 import {
   APP_VERSION,
   EXPIRY_LEAD_MS,
+  LOGIN_BASE_CN,
   NPM,
   PLACEHOLDER_BASE,
   PROVIDER,
   PROVIDER_NAME,
 } from "./src/constants.mjs"
-import { credentialOf, expiryMs, identityOf, nearExpiry, toStored } from "./src/credential.mjs"
+import { accountLabelOf, credentialOf, expiryMs, identityOf, nearExpiry, toStored } from "./src/credential.mjs"
 import { beginLogin, isTerminalRefreshError, refreshOnce } from "./src/login.mjs"
-import { SignInError, fetchCatalog, fetchUsage } from "./src/api.mjs"
+import { SignInError, commitInvitation, fetchCatalog, fetchInvitation, fetchUserInfo, fetchUsage } from "./src/api.mjs"
 import { FALLBACK_ENTRIES, liveModels, makeIndex, staticModels } from "./src/models.mjs"
 import { chat } from "./src/chat.mjs"
-import { accountKeyOf, readModels, utdid, writeModels } from "./src/store.mjs"
+import { accountKeyOf, readMagpieAuthSlots, readModels, utdid, writeModels } from "./src/store.mjs"
 
 /** 内嵌图标（自绘 SVG，13 行；不引用厂商素材）。`package.json` 的 `magpie.icon` 是同一份。 */
+/**
+ * 「邀请码」方法拿不到 getAuth()（magpie 的 method 契约只有 inputs），
+ * 从 magpie 自己的账号槽里找当前 accio 账号；多个账号时不猜，让用户去账号页确认。
+ */
+function currentAccioCredential() {
+  const slots = readMagpieAuthSlots(PROVIDER)
+  if (slots.length === 0) return null
+  const cred = credentialOf(slots[0].value)
+  return cred ?? null
+}
+
 const ICON =
   "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij48cmVjdCB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcng9IjI4IiBmaWxsPSIjMTAxYTI2Ii8+PHBhdGggZD0iTTY0IDI2IEw5NiAxMDIgSDgwIEw3MiA4MiBINTYgTDQ4IDEwMiBIMzIgWiBNNjAgNjggSDY4IEw2NCA1MiBaIiBmaWxsPSIjZmY3YTQ1Ii8+PC9zdmc+"
 
@@ -135,6 +147,18 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
                 { label: "国际站（zh.accio.com）", value: "global" },
               ],
             },
+            {
+              // 新账号注册时填上级的邀请码：登录页按 `?ic=…` 建立邀请关系，
+              // 要等新号注册完才生效，所以这里只能带进 URL，不能事后补。
+              type: "text",
+              key: "invite",
+              message: "邀请码（可选，新账号归属上级）",
+              placeholder: "留空跳过；形如 IC624891464548",
+              validate: (v) => {
+                const c = String(v ?? "").trim()
+                return c === "" || /^IC[0-9A-Z]{6,}$/i.test(c) ? undefined : "邀请码形如 IC624891464548"
+              },
+            },
           ],
 
           /**
@@ -143,7 +167,8 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
            */
           async authorize(inputs) {
             const region = inputs?.region === "global" ? "global" : "cn"
-            const started = await beginLogin({ region })
+            const inviteCode = String(inputs?.invite ?? "").trim()
+            const started = await beginLogin({ region, inviteCode })
             return {
               url: started.url,
               instructions: started.instructions,
@@ -152,19 +177,77 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
               async callback() {
                 try {
                   const cred = await started.result
+                  // 账号显示名：官方 `/api/auth/userinfo` 给的手机号（邮箱登录时是邮箱）。
+                  // 拿不到就退回空串让卡片用供应商名 —— **不编造**。
+                  const info = await fetchUserInfo(cred).catch((e) => {
+                    log(`拿不到账号信息，卡片将显示供应商名：${e?.message ?? e}`, "warn")
+                    return null
+                  })
                   return {
                     type: "success",
                     // magpie 的 refreshLead 机制读这两个
                     access: JSON.stringify(cred),
                     refresh: cred.refresh_token,
                     expires: expiryMs(cred),
-                    // Accio 不给账号名 —— 空字符串让卡片回退到供应商名，不编造
-                    accountId: "",
+                    accountId: accountLabelOf(info),
                     // 区分同名账号（同一站两个账号）
                     uid: identityOf(cred),
                   }
                 } catch (e) {
                   return { type: "failed", error: String(e?.message ?? e).slice(0, 500) }
+                }
+              },
+            }
+          },
+        },
+        {
+          /**
+           * 邀请码 —— 走官方 `/api/invitation/commit`（参数名 `code`，取自客户端 asar）。
+           *
+           * 只对**已登录**的账号有意义：新号注册时的邀请关系由登录 URL 的 `?ic=` 建立
+           * （主登录方法的「邀请码」输入框），这里是「登录之后补绑」的入口。
+           */
+          type: "oauth",
+          label: `Accio 邀请码（绑定到已登录账号）`,
+          prompts: [
+            {
+              type: "text",
+              key: "code",
+              message: "邀请码",
+              placeholder: "IC624891464548",
+              validate: (v) =>
+                /^IC[0-9A-Z]{6,}$/i.test(String(v ?? "").trim()) ? undefined : "邀请码形如 IC624891464548",
+            },
+          ],
+
+          async authorize(inputs) {
+            const code = String(inputs?.code ?? "").trim().toUpperCase()
+            const cred = currentAccioCredential()
+            // ⚠ authorize 里失败只能抛（返回 failed 是 callback 的契约）
+            if (!cred) throw new Error("先用「登录 Accio」登录一个账号，再来绑定邀请码")
+            return {
+              // 不需要浏览器：magpie 的契约要求带 url，这里标记 opened 让它别再开一次
+              url: LOGIN_BASE_CN,
+              opened: true,
+              method: "auto",
+              instructions: `正在把邀请码 ${code} 提交到当前账号…`,
+
+              async callback() {
+                try {
+                  await commitInvitation(cred, code)
+                  const bound = await fetchInvitation(cred).catch(() => false)
+                  const info = await fetchUserInfo(cred).catch(() => null)
+                  return {
+                    type: "success",
+                    access: JSON.stringify(cred),
+                    refresh: cred.refresh_token,
+                    expires: expiryMs(cred),
+                    accountId: accountLabelOf(info),
+                    uid: identityOf(cred),
+                    instructions: `邀请码 ${code} 已提交${bound ? "（本账号已绑定邀请关系）" : ""}`,
+                  }
+                } catch (e) {
+                  return { type: "failed", error: String(e?.message ?? e).slice(0, 300) }
                 }
               },
             }
