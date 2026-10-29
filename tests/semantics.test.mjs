@@ -11,6 +11,16 @@ import { AccioAuthPlugin } from "../index.mjs"
 import { toStored } from "../src/credential.mjs"
 import { beginLogin } from "../src/login.mjs"
 
+// ⚠ 测试卫生：把 HOME 指到临时目录再跑（Gyl1219 hub 的同款教训）。
+// 否则 utdid / 模型目录快照会写进本机真实的 ~/.cache/magpie —— 每跑一次测试就多几个文件。
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+const sandbox = mkdtempSync(join(tmpdir(), "accio-test-"))
+process.env.USERPROFILE = sandbox
+process.env.HOME = sandbox
+
+
 const CRED = { access_token: "acc01_live", refresh_token: "rr_1", expires_at: Date.now() + 3600_000, region: "cn" }
 const STORED = toStored(CRED)
 
