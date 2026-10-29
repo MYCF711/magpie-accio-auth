@@ -36,6 +36,25 @@ export function fileOf(kind, { account } = {}) {
  * ⚠ 这里**只读**：写入是 magpie 的事，插件抄一份就会出现两个刷新者。
  *   用途只有一个 —— 「邀请码」这个登录方式拿不到 getAuth()，只能从槽里找当前账号。
  */
+/**
+ * 当前邀请码策略（`~/.cache/magpie/accio-invite.json`）。
+ *
+ * 与 magicrew 的 `magicrew-invite-policy-<site>.json` 同一语义：
+ * 登录时**自动**把它带进登录页 URL，用户不用每次都填。
+ * 区别：Accio 没有「查询自己邀请码」的接口（`/api/invitation/query` 只返回布尔），
+ * 所以这里的码来自「上一次成功用过的码」—— 首次由用户在「邀请码」里填一次。
+ */
+export function readInviteCode() {
+  const v = readJson(fileOf("invite"), null)
+  return typeof v?.code === "string" ? v.code.trim() : ""
+}
+
+export function writeInviteCode(code, source) {
+  const c = String(code ?? "").trim()
+  if (!c) return
+  writeJson(fileOf("invite"), { code: c, source: String(source ?? ""), at: Date.now() })
+}
+
 export function magpieConfigDir() {
   return join(homedir(), ".config", "magpie")
 }

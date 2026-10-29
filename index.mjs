@@ -51,10 +51,85 @@ import { beginLogin, isTerminalRefreshError, refreshOnce } from "./src/login.mjs
 import { SignInError, commitInvitation, fetchCatalog, fetchInvitation, fetchUserInfo, fetchUsage } from "./src/api.mjs"
 import { FALLBACK_ENTRIES, liveModels, makeIndex, staticModels } from "./src/models.mjs"
 import { chat } from "./src/chat.mjs"
-import { accountKeyOf, readMagpieAuthSlots, readModels, utdid, writeModels } from "./src/store.mjs"
+import { accountKeyOf, readInviteCode, readModels, utdid, writeInviteCode, writeModels } from "./src/store.mjs"
 import { importDesktopLogin } from "./src/desktop.mjs"
 
 /** 内嵌图标（自绘 SVG，13 行；不引用厂商素材）。`package.json` 的 `magpie.icon` 是同一份。 */
+/** 登录站点选择 —— 主登录与「邀请码」方法共用同一份。 */
+const REGION_PROMPT = {
+  type: "select",
+  key: "region",
+  message: "登录站点",
+  options: [
+    { label: "中国站（accio-ai.com）", value: "cn" },
+    { label: "国际站（zh.accio.com）", value: "global" },
+  ],
+}
+
+/**
+ * 「邀请码」那个数字框的灰色字 —— 与 magicrew 同一套文案节奏：
+ * 打开时按当前策略现算，用户一眼知道现在用的是哪个码。
+ */
+function inviteHint() {
+  const c = readInviteCode()
+  return c
+    ? `当前模式：自动（${c}）· 输入 1 保持不变，或直接填新码`
+    : "还没有邀请码：直接填，形如 IC624891464548"
+}
+
+function invitePrompt() {
+  return { type: "text", key: "invite", message: "邀请码", placeholder: inviteHint() }
+}
+
+/** 面板标题后缀 —— 让「当前用哪个码」在选登录方式那一屏就能看见（加载时算一次）。 */
+function inviteTag() {
+  const c = readInviteCode()
+  return c ? `（邀请码 ${c}）` : ""
+}
+
+/**
+ * 数字框的值 → 真正要带进登录 URL 的码。
+ *   0 / 留空 / 1 → 沿用当前策略（1 是「保持当前」；Accio 没有多账号码表，二者等价）
+ *   其它         → 当作新码（大写）
+ */
+function resolveInviteChoice(raw) {
+  const s = String(raw ?? "").trim()
+  if (s === "" || s === "0" || s === "1") return readInviteCode()
+  return s.toUpperCase()
+}
+
+/**
+ * 主登录与「邀请码」共用的 callback：
+ *   拿凭据 → 取账号名 → 有邀请码就顺手提交一次（老账号已有关系时服务端会忽略）→ 记下这个码。
+ */
+function loginCallback(started, inviteCode) {
+  return async function callback() {
+    try {
+      const cred = await started.result
+      const info = await fetchUserInfo(cred).catch((e) => {
+        log(`拿不到账号信息，卡片将显示供应商名：${e?.message ?? e}`, "warn")
+        return null
+      })
+      if (inviteCode) {
+        await commitInvitation(cred, inviteCode).catch((e) => {
+          log(`邀请码提交失败（登录本身已成功）：${e?.message ?? e}`, "warn")
+        })
+        writeInviteCode(inviteCode, "used")
+      }
+      return {
+        type: "success",
+        access: JSON.stringify(cred),
+        refresh: cred.refresh_token,
+        expires: expiryMs(cred),
+        accountId: accountLabelOf(info),
+        uid: identityOf(cred),
+      }
+    } catch (e) {
+      return { type: "failed", error: String(e?.message ?? e).slice(0, 500) }
+    }
+  }
+}
+
 /**
  * 「邀请码」方法拿不到 getAuth()（magpie 的 method 契约只有 inputs），
  * 从 magpie 自己的账号槽里找当前 accio 账号；多个账号时不猜，让用户去账号页确认。
@@ -137,30 +212,11 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
            * 两个登录入口，但**同一个供应商**：换码、目录、对话、额度都在
            * phoenix-gw.alibaba.com —— 站点只决定登录页域名。
            * 判据见 README「一个站点还是两个」。
+           *
+           * 邀请码不在这里问：与 magicrew 同款，邀请码有独立的登录方式，
+           * 保存后由 `readInviteCode()` 自动带上；这样「登录 Accio」永远只问站点。
            */
-          prompts: [
-            {
-              type: "select",
-              key: "region",
-              message: "登录站点",
-              options: [
-                { label: "中国站（accio-ai.com）", value: "cn" },
-                { label: "国际站（zh.accio.com）", value: "global" },
-              ],
-            },
-            {
-              // 新账号注册时填上级的邀请码：登录页按 `?ic=…` 建立邀请关系，
-              // 要等新号注册完才生效，所以这里只能带进 URL，不能事后补。
-              type: "text",
-              key: "invite",
-              message: "邀请码（可选，新账号归属上级）",
-              placeholder: "留空跳过；形如 IC624891464548",
-              validate: (v) => {
-                const c = String(v ?? "").trim()
-                return c === "" || /^IC[0-9A-Z]{6,}$/i.test(c) ? undefined : "邀请码形如 IC624891464548"
-              },
-            },
-          ],
+          prompts: [REGION_PROMPT],
 
           /**
            * ⚠ **立刻返回**，不能在这里等用户完成登录 —— 真正等的是 callback()。
@@ -168,36 +224,13 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
            */
           async authorize(inputs) {
             const region = inputs?.region === "global" ? "global" : "cn"
-            const inviteCode = String(inputs?.invite ?? "").trim()
+            const inviteCode = readInviteCode()
             const started = await beginLogin({ region, inviteCode })
             return {
               url: started.url,
               instructions: started.instructions,
               method: "auto",
-
-              async callback() {
-                try {
-                  const cred = await started.result
-                  // 账号显示名：官方 `/api/auth/userinfo` 给的手机号（邮箱登录时是邮箱）。
-                  // 拿不到就退回空串让卡片用供应商名 —— **不编造**。
-                  const info = await fetchUserInfo(cred).catch((e) => {
-                    log(`拿不到账号信息，卡片将显示供应商名：${e?.message ?? e}`, "warn")
-                    return null
-                  })
-                  return {
-                    type: "success",
-                    // magpie 的 refreshLead 机制读这两个
-                    access: JSON.stringify(cred),
-                    refresh: cred.refresh_token,
-                    expires: expiryMs(cred),
-                    accountId: accountLabelOf(info),
-                    // 区分同名账号（同一站两个账号）
-                    uid: identityOf(cred),
-                  }
-                } catch (e) {
-                  return { type: "failed", error: String(e?.message ?? e).slice(0, 500) }
-                }
-              },
+              callback: loginCallback(started, inviteCode),
             }
           },
         },
@@ -255,54 +288,37 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
         },
         {
           /**
-           * 邀请码 —— 走官方 `/api/invitation/commit`（参数名 `code`，取自客户端 asar）。
+           * 邀请码 —— 与 magicrew 同款形态：
            *
-           * 只对**已登录**的账号有意义：新号注册时的邀请关系由登录 URL 的 `?ic=` 建立
-           * （主登录方法的「邀请码」输入框），这里是「登录之后补绑」的入口。
+           *   ① 一个**数字文本框**：0/留空 = 自动（沿用当前策略码）、1 = 保持当前、
+           *      其它 = 直接当新邀请码；
+           *   ② `ask()` 多步问答：问完邀请码**直接接主登录**（不再回「已保存」就结束）；
+           *   ③ 保存策略 → 之后所有登录入口（含「登录 Accio」）自动带 `?ic=<码>`。
+           *
+           * 与 magicrew 的唯一差别：Accio 没有「查询自己邀请码」的接口
+           * （`/api/invitation/query` 只返回布尔），所以「自己码」的来源是
+           * **上一次成功使用的码**（`accio-invite.json`），首次由用户填一次。
            */
           type: "oauth",
-          label: `Accio 邀请码（绑定到已登录账号）`,
-          prompts: [
-            {
-              type: "text",
-              key: "code",
-              message: "邀请码",
-              placeholder: "IC624891464548",
-              validate: (v) =>
-                /^IC[0-9A-Z]{6,}$/i.test(String(v ?? "").trim()) ? undefined : "邀请码形如 IC624891464548",
-            },
-          ],
-
+          label: `Accio 邀请码${inviteTag()}`,
+          get prompts() {
+            return [invitePrompt()]
+          },
+          async ask(inputs) {
+            if (!inputs || !Object.prototype.hasOwnProperty.call(inputs, "invite")) return invitePrompt()
+            if (!Object.prototype.hasOwnProperty.call(inputs, "region")) return REGION_PROMPT
+            return null
+          },
           async authorize(inputs) {
-            const code = String(inputs?.code ?? "").trim().toUpperCase()
-            const cred = currentAccioCredential()
-            // ⚠ authorize 里失败只能抛（返回 failed 是 callback 的契约）
-            if (!cred) throw new Error("先用「登录 Accio」登录一个账号，再来绑定邀请码")
+            const code = resolveInviteChoice(inputs?.invite)
+            if (code) writeInviteCode(code, "chosen")
+            const region = inputs?.region === "global" ? "global" : "cn"
+            const started = await beginLogin({ region, inviteCode: code })
             return {
-              // 不需要浏览器：magpie 的契约要求带 url，这里标记 opened 让它别再开一次
-              url: LOGIN_BASE_CN,
-              opened: true,
+              url: started.url,
+              instructions: started.instructions,
               method: "auto",
-              instructions: `正在把邀请码 ${code} 提交到当前账号…`,
-
-              async callback() {
-                try {
-                  await commitInvitation(cred, code)
-                  const bound = await fetchInvitation(cred).catch(() => false)
-                  const info = await fetchUserInfo(cred).catch(() => null)
-                  return {
-                    type: "success",
-                    access: JSON.stringify(cred),
-                    refresh: cred.refresh_token,
-                    expires: expiryMs(cred),
-                    accountId: accountLabelOf(info),
-                    uid: identityOf(cred),
-                    instructions: `邀请码 ${code} 已提交${bound ? "（本账号已绑定邀请关系）" : ""}`,
-                  }
-                } catch (e) {
-                  return { type: "failed", error: String(e?.message ?? e).slice(0, 300) }
-                }
-              },
+              callback: loginCallback(started, code),
             }
           },
         },
