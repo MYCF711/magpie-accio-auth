@@ -248,3 +248,26 @@ Accio 的换码 / 续期响应只有两个 token + 过期时间，没有账号�
 | [alan113523/accio-local-api](https://github.com/alan113523/accio-local-api)（JS） | Anthropic + OpenAI 双协议桥 | 独立进程；本插件是 magpie 插件形态 |
 | [Gyl1219/magpie-providers-hub](https://github.com/Gyl1219/magpie-providers-hub)（MIT） | 一个包十个供应商的聚合 hub | 本仓库从它的 `src/accio.mjs` 拆出 accio 单包 —— 聚合形态下 magpie 的 failover 与单渠道开关都是 provider 粒度，做不到 |
 | 本仓库 | **一个包一个供应商**（`accio`），九项钩子全实现 | — |
+
+---
+
+## 10 · 检索记录（2026-10-29，「magpie 里有没有 accio 插件」）
+
+| 源 | 检索方式 | 结果 |
+|---|---|---|
+| magpie 社区插件仓库 | `GET api.github.com/repos/magpie-community/plugins/contents/packages` | **49 个包，没有 accio**：aider, antigravity-cloak, autoclaw, block-patterns, bub, calc, chat, cline, cloudflare-workers-ai, codearts, codex-history, commandcode, copilot, cowork, cursor, devin, factory, gcp-ai, grok, history-trim, joycode, kilo, kimi-desktop, kimi-work, kiro, layerfs, mimo, minimax, model-map, nous, opencodereview, opendesign, param-override, pig, qoder, raccoon, reserve, river, search1api, system-prompt, think-tags, trae, type4me, usage, word-guard, workbuddy, zcode, zed, zen-free |
+| 社区 registry.json | 同上仓库 | 未包含 accio 条目 |
+| npm | `registry.npmjs.org/-/v1/search?text=accio opencode` / `magpie accio` / `accio auth magpie` | 没有任何 magpie / opencode 的 accio 插件；`@accio-ai/*` 是厂商自己的包（ecommerce-cli / dps-cli），不是插件 |
+| npm 包名占用 | `registry.npmjs.org/accio-auth` / `magpie-accio-auth` / `opencode-accio-auth` | 三个都 404（可用） |
+| GitHub | `search/repositories?q=accio+2api` / `accio+proxy` / `accio+openai` / `magpie+accio` | 见下表 |
+
+### GitHub 上的 Accio 反代 / 插件形态
+
+| 仓库 | 形态 | 本插件是否采用 |
+|---|---|---|
+| [Gyl1219/magpie-providers-hub](https://github.com/Gyl1219/magpie-providers-hub) ★1，MIT | 一个包十个供应商的聚合 hub，其中 `src/accio.mjs`（1,144 行）是 Accio 渠道的**真机实测**实现（DSH 2026-10 结论） | **采用**：协议层移植成单供应商插件；去掉聚合层（sidecar / 自注册 / 通知 / sweep） |
+| [linhuai777/accio2api](https://github.com/linhuai777/accio2api) ★8，MIT，Python | 独立 OpenAI 兼容反代：账号池 + 邮箱别名 + 代理池 + Web 控制台 | 未采用（不是插件形态）；协议结论可交叉参考 |
+| [Maicon501a/accio-proxy](https://github.com/Maicon501a/accio-proxy) ★0，Go+Wails | 双模式：读 Accio.exe 的 DPAPI 登录态，或独立模拟 | 未采用（要装客户端；本插件用标准 OAuth） |
+| [alan113523/accio-local-api](https://github.com/alan113523/accio-local-api) ★0，JS | 本地 Anthropic + OpenAI 双协议桥 | 未采用（独立进程） |
+| [380758137/accio2api](https://github.com/380758137/accio2api) ★2 | Accio 2API PoC（README 404） | 未采用（PoC） |
+| [xyh9949/Accio-Switch](https://github.com/xyh9949/Accio-Switch) ★3 | 反向：让 Accio 客户端用第三方 OpenAI/NewAPI 模型 | 方向相反，未采用 |
