@@ -45,7 +45,7 @@ import {
   PROVIDER,
   PROVIDER_NAME,
 } from "./src/constants.mjs"
-import { credentialOf, expiryMs, identityOf, toStored } from "./src/credential.mjs"
+import { credentialOf, expiryMs, identityOf, nearExpiry, toStored } from "./src/credential.mjs"
 import { beginLogin, isTerminalRefreshError, refreshOnce } from "./src/login.mjs"
 import { SignInError, fetchCatalog, fetchUsage } from "./src/api.mjs"
 import { FALLBACK_ENTRIES, liveModels, makeIndex, staticModels } from "./src/models.mjs"
@@ -216,7 +216,17 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
           async fetch(input, init) {
             // ⚠ 每次重新读 auth —— 可能已被 refresh 更新
             const fresh = await getAuth()
-            const current = credentialOf(fresh) ?? cred
+            let current = credentialOf(fresh) ?? cred
+
+            // 临期软续期：失败不抛、沿用原凭据（与 Gyl1219 hub 的 ensureAuth 同口径）。
+            // 真正确凿的失效由下方 chat 的 401 硬续期兜底。
+            if (nearExpiry(current, EXPIRY_LEAD_MS)) {
+              try {
+                current = await renew(current, fresh)
+              } catch (e) {
+                log(`临期软续期失败，沿用原凭据：${e?.message ?? e}`, "warn")
+              }
+            }
 
             let body
             if (typeof init?.body === "string") {
