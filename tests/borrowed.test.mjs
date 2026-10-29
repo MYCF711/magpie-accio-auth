@@ -208,7 +208,7 @@ test("refreshOnce：不同 refresh_token（同 provider 两个账号）各自消
 
 // ── ⑤ 额度 display（magpie 一定渲染的兜底）─────────────────────────────
 
-test("fetchUsage：display 带「已用 / 总量」与每日刷新时刻（结构化字段可能被 quotas.json 丢掉）", async () => {
+test("fetchUsage：display 说「剩余 / 总量」与每日刷新时刻（结构化字段可能被 quotas.json 丢掉）", async () => {
   const original = globalThis.fetch
   globalThis.fetch = async (input) => {
     const url = String(input)
@@ -223,7 +223,7 @@ test("fetchUsage：display 带「已用 / 总量」与每日刷新时刻（结�
   }
   try {
     const usage = await fetchUsage({ access_token: "at", refresh_token: "rt", expires_at: Date.now() + 3600_000 })
-    assert.equal(usage.windows[0].display.startsWith("已用 50 / 300"), true)
+    assert.equal(usage.windows[0].display.startsWith("剩余 250 / 300"), true)
     assert.match(usage.windows[0].display, /\d{2}:\d{2} 刷新$/, "刷新时刻要写进 display（不依赖可能被丢的 resetsAt）")
     assert.ok(usage.windows[0].resetsAt, "结构化 resetsAt 仍要给")
   } finally {

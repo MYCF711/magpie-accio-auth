@@ -53,7 +53,6 @@ import { FALLBACK_ENTRIES, liveModels, makeIndex, staticModels } from "./src/mod
 import { chat } from "./src/chat.mjs"
 import { accountKeyOf, readInviteCode, readModels, utdid, writeInviteCode, writeModels } from "./src/store.mjs"
 import { importDesktopLogin } from "./src/desktop.mjs"
-import { startCodeLogin } from "./src/headless.mjs"
 
 /** 内嵌图标（自绘 SVG，13 行；不引用厂商素材）。`package.json` 的 `magpie.icon` 是同一份。 */
 /** 登录站点选择 —— 主登录与「邀请码」方法共用同一份。 */
@@ -206,85 +205,6 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
 
       // ═══ ② 登录 ═══════════════════════════════════════════════════
       methods: [
-        {
-          /**
-           * 内置验证码登录 —— **不开任何可见窗口**。
-           *
-           * headless Edge 在后台把登录页走完（填账号 → 勾协议 → 发送验证码 → 过 NC 滑块），
-           * 停在验证码页等 magpie 把用户输入的 6 位码交过来（`method: "code"`）。
-           * 提交后页面跳回本进程的 loopback，`beginLogin()` 的 result 兑现成 token。
-           *
-           * 细节与三个真机坑见 `src/headless.mjs` 头。
-           */
-          type: "oauth",
-          label: `Accio 验证码登录（内置，不弹浏览器）`,
-          prompts: [
-            {
-              type: "text",
-              key: "account",
-              message: "手机号或邮箱",
-              placeholder: "13800138000 或 you@example.com",
-              validate: (v) => {
-                const s = String(v ?? "").trim()
-                if (/^1\d{10}$/.test(s.replace(/[\s-]/g, ""))) return undefined
-                if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)) return undefined
-                return "填 11 位手机号，或一个完整邮箱"
-              },
-            },
-            REGION_PROMPT,
-          ],
-
-          async authorize(inputs) {
-            const account = String(inputs?.account ?? "").trim()
-            if (!account) throw new Error("先填手机号或邮箱")
-            const region = inputs?.region === "global" ? "global" : "cn"
-            const inviteCode = readInviteCode()
-            const started = await beginLogin({ region, inviteCode })
-            const session = await startCodeLogin({ url: started.url, account })
-            // 浏览器进程最多留 10 分钟（验证码有效期），没人来就自己收尸
-            const reaper = setTimeout(() => { session.close().catch(() => {}) }, 10 * 60_000)
-            reaper.unref?.()
-
-            return {
-              url: started.url,
-              opened: true, // 页面是我们自己（headless）开的，magpie 别再开
-              method: "code",
-              instructions: `验证码已发送到 ${account}。把 6 位验证码填在下面，登录会在后台自动完成（不会弹浏览器）。`,
-
-              async callback(code) {
-                try {
-                  const c = String(code ?? "").trim()
-                  if (!/^\d{4,8}$/.test(c)) return { type: "failed", error: "验证码一般是 6 位数字" }
-                  await session.submitCode(c)
-                  const cred = await Promise.race([
-                    started.result,
-                    new Promise((_, rej) => setTimeout(() => rej(new Error("验证码提交后 2 分钟没拿到登录态")), 120_000)),
-                  ])
-                  const info = await fetchUserInfo(cred).catch(() => null)
-                  if (inviteCode) {
-                    await commitInvitation(cred, inviteCode).catch((e) => {
-                      log(`邀请码提交失败（登录本身已成功）：${e?.message ?? e}`, "warn")
-                    })
-                    writeInviteCode(inviteCode, "used")
-                  }
-                  return {
-                    type: "success",
-                    access: JSON.stringify(cred),
-                    refresh: cred.refresh_token,
-                    expires: expiryMs(cred),
-                    accountId: accountLabelOf(info),
-                    uid: identityOf(cred),
-                  }
-                } catch (e) {
-                  return { type: "failed", error: String(e?.message ?? e).slice(0, 500) }
-                } finally {
-                  clearTimeout(reaper)
-                  await session.close().catch(() => {})
-                }
-              },
-            }
-          },
-        },
         {
           type: "oauth",
           label: `登录 ${PROVIDER_NAME}（阿里 Accio Work）`,

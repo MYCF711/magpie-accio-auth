@@ -209,8 +209,11 @@ export async function fetchUsage(credential) {
     const resetLabel = bucket.key === "daily" && dailyResetIso !== undefined
       ? ` · ${new Date(dailyResetIso).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })} 刷新`
       : ""
-    const display = Number.isFinite(total) && total > 0 && Number.isFinite(used)
-      ? `已用 ${used} / ${total}${resetLabel}`
+    // ⚠ 这里必须说「剩余」而不是「已用」：`amount` 传的是 used（magpie 按已用占占比），
+    //   而用户在卡片上找的是「我还有多少」。0.1.5 及以前写「已用 0 / 500」，
+    //   被当成「这个号没有邀请积分」（真实投诉，2026-10-29）。
+    const display = Number.isFinite(total) && total > 0
+      ? `剩余 ${remaining} / ${total}${resetLabel}`
       : `剩余 ${remaining}${resetLabel}`
     windows.push(usageWindow({
       name: `Accio · ${bucket.label}`,
