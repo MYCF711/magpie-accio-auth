@@ -73,14 +73,14 @@ magpie：任何支持 OpenAI 协议的 agent 都能选它的模型。
 ### 命令行
 
 ```bash
-# 从 npm（推荐）
-magpie plugin add accio-auth
-
-# 从仓库源码（拿最新代码，不走 npm）
+# 从仓库源码（装好之后卡片标题就是包内的 Accio）
 magpie plugin add github:MYCF711/magpie-accio-auth
 
-# 本地目录（改代码时）
-magpie plugin add /path/to/magpie-accio-auth
+# 本地目录（改代码时）—— ⚠ 路径安装的卡片标题就是那个路径
+magpie plugin add D:\主工作区\projects\magpie-accio-auth
+
+# 从 npm（发布之后）
+magpie plugin add accio-auth
 ```
 
 装完确认：
