@@ -271,3 +271,35 @@ Accio 的换码 / 续期响应只有两个 token + 过期时间，没有账号�
 | [alan113523/accio-local-api](https://github.com/alan113523/accio-local-api) ★0，JS | 本地 Anthropic + OpenAI 双协议桥 | 未采用（独立进程） |
 | [380758137/accio2api](https://github.com/380758137/accio2api) ★2 | Accio 2API PoC（README 404） | 未采用（PoC） |
 | [xyh9949/Accio-Switch](https://github.com/xyh9949/Accio-Switch) ★3 | 反向：让 Accio 客户端用第三方 OpenAI/NewAPI 模型 | 方向相反，未采用 |
+
+
+---
+
+## 11 · 从 Gyl1219/magpie-providers-hub 学到的（逐条判定：借鉴 / 不借鉴）
+
+`magpie-providers-hub` 是同一批 DSH 真机结论的另一个 magpie 形态（聚合 10 渠道）。本仓库
+把它的 `src/accio.mjs` 拆成单供应商插件；下面是**逐文件复核后**的借鉴判定。
+
+### 借鉴（已进代码）
+
+| 来源 | 结论 | 落在哪 |
+|---|---|---|
+| `src/minimax-transport.mjs` | 传输级重试：只重试 ECONNRESET / ENOTFOUND / `fetch failed` 这类连接错误，2 次 400ms 退避；4xx/5xx 不重试；abort 不重试 | `src/transport.mjs`（`isTransportError` / `fetchWithRetry`），`chat` 与 `api` 都走它 |
+| `src/aggregate.mjs` 的 `ensureAuth` / `renewSoft` | loader 发请求前先看临期、先软续期；续期失败不抛、沿用原凭据 | `index.mjs` 的 `loader().fetch` |
+| `AGENTS.md` §5 | **chat 不要挂硬超时**（120s 也会掐断长对话）—— magpie 的 signal 管取消 | `src/chat.mjs` 的 `send()` 只透传 `signal` |
+| `AGENTS.md` §5 | 过期时间是日期字符串时不能 `Number()`（= NaN → 判「永不过期」→ 拿死 token 打上游） | `src/credential.mjs` 的 `accioExpiresAtMs` 支持 ISO / 空格格式 |
+| `AGENTS.md` §4 | `display` 是 magpie 一定渲染的兜底；`resetsAt` / `runsOutAt` 实测会被 `quotas.json` 丢掉 | `src/api.mjs` 的 windows 都带 `display`（含每日刷新时刻） |
+| `AGENTS.md` §5 | 渠道 `chat` 必须返回**原始 Response**，不要 `{ response }` 包装（magpie 取 `res.headers.forEach` 会 502） | `src/chat.mjs` 的 `chat()` 直接 return Response |
+| `tests/usage.test.mjs` | Accio 的额度口径：三桶固定顺序、0 桶保留、缺席桶不产出、只有 daily 有 resetsAt | `src/api.mjs` 与 `tests/accio.test.mjs` |
+
+### 刻意不借鉴（附理由）
+
+| 来源 | 为什么不 |
+|---|---|
+| `src/aggregate.mjs` 的 `writeSidecar` / `loadCredential` 旁路双写 | magpie 的 `plugin-auth.json` 已经是账号的唯一来源；插件再存一份会出现两个刷新者，最后凭据分叉、用户莫名掉登录 |
+| `page/` 页面快照 + `sweepAllChannels` 5 分钟定时器 + Windows toast | 脚手架「最小交付面」明确禁止：签到调度/额度趋势/界面 magpie 都已做，插件重复实现是错。本插件只用 magpie 的原生卡片 |
+| `src/self-register.mjs`（写 magpie 市场缓存） | 上游 `plugins#399` review 明确要求删掉：插件对 magpie 的目录只有读的份 |
+| `migrateLegacySlots` / 旧账号槽迁移 | 单供应商、首版，没有旧槽可迁 |
+| 重复登录仍有效账号「不覆盖原槽」 | 需要稳定的账号 id；Accio 不返回账号名/邮箱/uid，`uid` 只能从 JWT sub 取，取不到时是 refresh_token 哈希（重登会变）。没有可靠判据时宁可不猜 |
+| `shared.mjs` 的 `assignExpiryBands` 滚动指针分档 | hub 的 AGENTS §1 明确写着：**accio 属于「余额/重置型」，不下发作废时间，滚动指针不适用**。本插件按三桶（每日/每月/推荐）+ 每日刷新时刻显示 |
+| `chat` 的第二参 `{body, signal, renew}` 约定 | 那是 hub 聚合层的内部接口；magpie 的插件契约是 `loader().fetch(input, init)`，我们已经按 magpie 的接口实现 |

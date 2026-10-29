@@ -32,6 +32,7 @@ import {
 } from "./constants.mjs"
 import { parseCatalog } from "./models.mjs"
 import { usage as buildUsage, usageWindow } from "./quota.mjs"
+import { fetchWithRetry } from "./transport.mjs"
 
 /** 未登录 / 登录失效的错误形状（调用方据此抛 `signIn: "expired"`）。 */
 export class SignInError extends Error {
@@ -63,12 +64,12 @@ function unwrap(path, status, text) {
 
 /** 模型目录：`POST /api/llm/config/v2`，token 在 body。 */
 export async function fetchCatalog(credential) {
-  const res = await fetch(`${GATEWAY}${CATALOG_PATH}`, {
+  const res = await fetchWithRetry(() => fetch(`${GATEWAY}${CATALOG_PATH}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ token: credential.access_token }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+  }))
   const text = await res.text()
   const data = unwrap(CATALOG_PATH, res.status, text)
   return parseCatalog({ data })
@@ -77,11 +78,11 @@ export async function fetchCatalog(credential) {
 /** 额度端点：`GET …?accessToken=…`。 */
 async function entitlementGet(path, credential) {
   const url = `${GATEWAY}${path}?accessToken=${encodeURIComponent(credential.access_token)}`
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(() => fetch(url, {
     method: "GET",
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+  }))
   const text = await res.text()
   return unwrap(path, res.status, text)
 }
@@ -147,13 +148,22 @@ export async function fetchUsage(credential) {
       ? Math.max(0, Math.min(100, Math.round(((Number.isFinite(used) ? used : total - remaining) / total) * 100)))
       : (remaining <= 0 ? 100 : 0)
 
+    // ⚠ `display` 是 magpie **一定渲染**的兜底：结构化字段（resetsAt / amount）
+    //   实测会被 quotas.json 丢掉一部分（Gyl1219 hub AGENTS §4）。重要信息写进 display。
+    const resetLabel = bucket.key === "daily" && dailyResetIso !== undefined
+      ? ` · ${new Date(dailyResetIso).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })} 刷新`
+      : ""
+    const display = Number.isFinite(total) && total > 0 && Number.isFinite(used)
+      ? `已用 ${used} / ${total}${resetLabel}`
+      : `剩余 ${remaining}${resetLabel}`
     windows.push(usageWindow({
       name: `Accio · ${bucket.label}`,
       used: percent,
       // 有上限就给 amount/limit（能画成「已用 / 总量」），否则只给 display
       ...(Number.isFinite(total) && total > 0 && Number.isFinite(used)
         ? { amount: used, limit: total, unit: "积分" }
-        : { display: `剩余 ${remaining}` }),
+        : {}),
+      display,
       ...(bucket.key === "daily" && dailyResetIso !== undefined ? { resetsAt: dailyResetIso } : {}),
     }))
   }

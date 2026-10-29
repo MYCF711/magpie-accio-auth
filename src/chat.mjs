@@ -33,10 +33,11 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 
-import { APP_KEY, APP_VERSION, GATEWAY, LLM_PATH, REQUEST_TIMEOUT_MS } from "./constants.mjs"
+import { APP_KEY, APP_VERSION, GATEWAY, LLM_PATH } from "./constants.mjs"
 import { codeOf } from "./models.mjs"
 import { tokenFingerprint } from "./credential.mjs"
 import { utdid } from "./store.mjs"
+import { fetchWithRetry } from "./transport.mjs"
 
 const requestIdOf = () => `req-${Date.now()}-${randomUUID().slice(0, 8)}`
 const sgKOf = (requestId) => createHash("md5").update(requestId, "utf8").digest("hex")
@@ -543,12 +544,17 @@ export async function chat({ credential, body: openaiBody, model, index, signal,
   else delete payload.system_instruction
   if (stop.length > 0) payload.stop_sequences = stop
 
-  const send = (cred) => fetch(`${GATEWAY}${LLM_PATH}?sg_k=${sgKOf(requestId)}`, {
-    method: "POST",
-    headers: accioHeaders(cred, extraHeaders),
-    body: JSON.stringify(payload),
-    signal: signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+  // ⚠ 不要挂硬超时：magpie 的 signal 管取消；30s 会把长对话 / 长思考掐断
+  //   （Gyl1219 hub 的 AGENTS §5 真机结论：120s 也会掐断长对话）。
+  const send = (cred) => fetchWithRetry(
+    () => fetch(`${GATEWAY}${LLM_PATH}?sg_k=${sgKOf(requestId)}`, {
+      method: "POST",
+      headers: accioHeaders(cred, extraHeaders),
+      body: JSON.stringify(payload),
+      signal,
+    }),
+    signal,
+  )
 
   let response = await send(credential)
 

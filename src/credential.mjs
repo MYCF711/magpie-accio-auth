@@ -62,9 +62,33 @@ function parseMaybeJson(raw) {
  * 非正数 / 非数字 → undefined（**不猜**，由调用方决定怎么办）。
  */
 export function accioExpiresAtMs(raw) {
-  const n = typeof raw === "number" ? raw : Number(raw)
-  if (!Number.isFinite(n) || n <= 0) return undefined
-  return n > 1e12 ? Math.round(n) : Math.round(n * 1000)
+  // 数字 / 数字字符串：秒（≤1e12）→ 毫秒
+  if (typeof raw === "number" || (typeof raw === "string" && /^\d+(?:\.\d+)?$/.test(raw.trim()))) {
+    const n = typeof raw === "number" ? raw : Number(raw.trim())
+    if (!Number.isFinite(n) || n <= 0) return undefined
+    return n > 1e12 ? Math.round(n) : Math.round(n * 1000)
+  }
+  if (raw instanceof Date) {
+    const ms = raw.getTime()
+    return Number.isNaN(ms) ? undefined : ms
+  }
+  // ⚠ 日期字符串必须走 Date.parse，不能 Number()：
+  //   `Number("2026-10-28 03:37:02")` = NaN → 旧实现会判「未过期」→ 拿死 token 打上游
+  //   （Gyl1219 hub AGENTS §5 的真机教训）。这里明确返回毫秒或 undefined。
+  if (typeof raw === "string") {
+    const s = raw.trim()
+    if (s === "") return undefined
+    const direct = Date.parse(s)
+    if (!Number.isNaN(direct)) return direct
+    // 「2026-10-28 23:59:59」这种空格分隔、无时区的厂商原样格式
+    const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/)
+    if (m) {
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] ?? 0), Number(m[5] ?? 0), Number(m[6] ?? 0))
+      if (!Number.isNaN(d.getTime())) return d.getTime()
+    }
+    return undefined
+  }
+  return undefined
 }
 
 /**

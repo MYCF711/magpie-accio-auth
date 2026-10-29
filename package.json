@@ -1,6 +1,6 @@
 {
   "name": "Accio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Accio (Alibaba Accio Work) for magpie: what a subscription already pays for, served as OpenAI chat — Qwen, GLM, DeepSeek, MiniMax and Kimi through an Alibaba sign-in, with live credit buckets and per-model rate multipliers.",
   "type": "module",
   "main": "./index.mjs",
