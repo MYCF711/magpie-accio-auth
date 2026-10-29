@@ -49,10 +49,24 @@ export function readInviteCode() {
   return typeof v?.code === "string" ? v.code.trim() : ""
 }
 
-export function writeInviteCode(code, source) {
+/** 与邀请码配对的分 `sId`（官方分享链接里的那个 base64）。没有就空串。 */
+export function readInviteSid() {
+  const v = readJson(fileOf("invite"), null)
+  return typeof v?.sid === "string" ? v.sid.trim() : ""
+}
+
+export function writeInviteCode(code, source, sid) {
   const c = String(code ?? "").trim()
   if (!c) return
-  writeJson(fileOf("invite"), { code: c, source: String(source ?? ""), at: Date.now() })
+  const next = { code: c, source: String(source ?? ""), at: Date.now() }
+  const s = String(sid ?? "").trim()
+  if (s) next.sid = s
+  else {
+    // 换码时保留旧 sid 只在不换码的前提下有意义；换了码就必须一起换
+    const prev = readJson(fileOf("invite"), null)
+    if (prev?.sid && prev?.code === c) next.sid = prev.sid
+  }
+  writeJson(fileOf("invite"), next)
 }
 
 export function magpieConfigDir() {

@@ -38,6 +38,7 @@ import { createServer } from "node:http"
 import {
   CALLBACK_PATH,
   INVITE_PARAM,
+  INVITE_SID_PARAM,
   INVITE_SOURCE,
   CLIENT_ID,
   EXPIRY_LEAD_MS,
@@ -62,7 +63,7 @@ export function createPkce() {
  * 拼授权 URL。
  * ⚠ 五个参数缺一不可，`ttid` 每次新生成（上游拿它做一次性的客户端标记）。
  */
-export function buildAuthUrl({ region, redirectUri, state, codeChallenge, inviteCode }) {
+export function buildAuthUrl({ region, redirectUri, state, codeChallenge, inviteCode, inviteSid }) {
   const params = new URLSearchParams({
     return_url: redirectUri,
     state,
@@ -80,6 +81,9 @@ export function buildAuthUrl({ region, redirectUri, state, codeChallenge, invite
     params.set("tenant", "accio")
     params.set("src", `p_referral_${invite}`)
     params.set("source", INVITE_SOURCE)
+    // 官方分享链接里与 `ic` 配对的那个 `sId`（base64，`==` 会被编码成 %3D%3D）
+    const sid = String(inviteSid ?? "").trim()
+    if (sid) params.set(INVITE_SID_PARAM, sid)
   }
   const base = region === "global" ? LOGIN_BASE_GLOBAL : LOGIN_BASE_CN
   return `${base}/login?${params.toString()}`
@@ -207,7 +211,7 @@ const page = (title, message) =>
  * @returns {Promise<{url: string, result: Promise<object>, instructions: string, close: () => void}>}
  *   `url` 立刻可用（magpie 会打开它）；`result` 兑现完整凭据。
  */
-export async function beginLogin({ region = "cn", inviteCode = "" } = {}) {
+export async function beginLogin({ region = "cn", inviteCode = "", inviteSid = "" } = {}) {
   const site = region === "global" ? "global" : "cn"
   const pkce = createPkce()
   const state = randomBytes(32).toString("hex")
@@ -299,7 +303,7 @@ export async function beginLogin({ region = "cn", inviteCode = "" } = {}) {
   })
 
   redirectUri = `http://127.0.0.1:${port}${CALLBACK_PATH}`
-  const url = buildAuthUrl({ region: site, redirectUri, state, codeChallenge: pkce.challenge, inviteCode })
+  const url = buildAuthUrl({ region: site, redirectUri, state, codeChallenge: pkce.challenge, inviteCode, inviteSid })
   const siteLabel = site === "global" ? "国际站（zh.accio.com）" : "中国站（accio-ai.com）"
 
   return {

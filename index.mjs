@@ -51,7 +51,7 @@ import { beginLogin, isTerminalRefreshError, refreshOnce } from "./src/login.mjs
 import { SignInError, commitInvitation, fetchCatalog, fetchInvitation, fetchUserInfo, fetchUsage } from "./src/api.mjs"
 import { FALLBACK_ENTRIES, liveModels, makeIndex, staticModels } from "./src/models.mjs"
 import { chat } from "./src/chat.mjs"
-import { accountKeyOf, readInviteCode, readModels, utdid, writeInviteCode, writeModels } from "./src/store.mjs"
+import { accountKeyOf, readInviteCode, readInviteSid, readModels, utdid, writeInviteCode, writeModels } from "./src/store.mjs"
 import { importDesktopLogin } from "./src/desktop.mjs"
 
 /** 内嵌图标（自绘 SVG，13 行；不引用厂商素材）。`package.json` 的 `magpie.icon` 是同一份。 */
@@ -225,7 +225,7 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
           async authorize(inputs) {
             const region = inputs?.region === "global" ? "global" : "cn"
             const inviteCode = readInviteCode()
-            const started = await beginLogin({ region, inviteCode })
+            const started = await beginLogin({ region, inviteCode, inviteSid: readInviteSid() })
             return {
               url: started.url,
               instructions: started.instructions,
@@ -313,7 +313,9 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
             const code = resolveInviteChoice(inputs?.invite)
             if (code) writeInviteCode(code, "chosen")
             const region = inputs?.region === "global" ? "global" : "cn"
-            const started = await beginLogin({ region, inviteCode: code })
+            // sId 只跟「策略里的那个码」成对；用户临时换码时不能拿旧 sId 去配新码
+            const inviteSid = code && code === readInviteCode() ? readInviteSid() : ""
+            const started = await beginLogin({ region, inviteCode: code, inviteSid })
             return {
               url: started.url,
               instructions: started.instructions,

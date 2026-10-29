@@ -47,10 +47,17 @@ test("buildAuthUrl：邀请码按官方分享链接的参数名拼（ic / tenant
   assert.equal(url.searchParams.get("tenant"), "accio")
   assert.equal(url.searchParams.get("src"), "p_referral_IC624891464548")
   assert.equal(url.searchParams.get("source"), "invite_center")
+  // sId 必须与官方分享链接一致（base64 的 == 会被编码成 %3D%3D）
+  const withSid = new URL(buildAuthUrl({
+    region: "cn", redirectUri: "http://x/cb", state: "s", codeChallenge: "c",
+    inviteCode: "IC624891464548", inviteSid: "hKVFtOhL8IqKglYysM8tGA==",
+  }))
+  assert.equal(withSid.searchParams.get("sId"), "hKVFtOhL8IqKglYysM8tGA==")
   // 不填邀请码时一个都不加（不能给普通登录带垃圾参数）
   const plain = new URL(buildAuthUrl({ region: "cn", redirectUri: "http://x/cb", state: "s", codeChallenge: "c" }))
   assert.equal(plain.searchParams.get("ic"), null)
   assert.equal(plain.searchParams.get("source"), null)
+  assert.equal(plain.searchParams.get("sId"), null)
 })
 
 test("accountLabelOf：手机号优先（去 +86）→ 邮箱 → userId → 空串", () => {

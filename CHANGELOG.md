@@ -2,6 +2,20 @@
 
 一条一行，说用户能感知的变化。发版流程见 magpie-plugin-scaffold 的 `UPDATING.md`（七步，`git push` 只是第 4 步）。
 
+## 0.1.7 — 2026-10-29
+
+**邀请链接补齐 `sId`，生成的地址与官方分享链接逐参数一致。**
+
+之前只带 `?ic=…&tenant=accio&src=p_referral_…&source=invite_center`，少了与 `ic` 配对的 `sId`
+（官方链接里是 `sId=hKVFtOhL8IqKglYysM8tGA%3D%3D`）。现在邀请码与 `sId` 成对存进
+`~/.cache/magpie/accio-invite.json`：策略码在用时自动带上 `sId`，临时换码则不拿旧 `sId` 去配新码。
+
+真机对比：`buildAuthUrl()` 的输出与你的分享链接除 `return_url/state/code_challenge/ttid`
+（这三个是本插件登录流程自己的参数）外，**`ic`、`tenant`、`src`、`source`、`sId` 五个逐字一致**。
+
+补充说明（上一版说错了）：`referral` 桶里的 500 是**注册体验积分**，不是邀请奖励。
+邀请奖励要真有人走你的链接并完成认证（双方各 +200）或订阅（双方各 +1,000）才到账；
+邀请记录（累计人数 / 获得 Credits）的接口不在本插件已知的两条 invitation 接口里，暂时读不到。
 ## 0.1.6 — 2026-10-29
 
 **额度条改说「剩余」，邀请积分看得见了。**
