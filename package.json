@@ -1,0 +1,59 @@
+{
+  "name": "Accio",
+  "version": "0.1.0",
+  "description": "Accio (Alibaba Accio Work) for magpie: what a subscription already pays for, served as OpenAI chat — Qwen, GLM, DeepSeek, MiniMax and Kimi through an Alibaba sign-in, with live credit buckets and per-model rate multipliers.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "scripts": {
+    "publish:npm": "node publish-npm.mjs",
+    "test": "node --test \"tests/*.test.mjs\"",
+    "score": "node scripts/score.mjs",
+    "maintenance": "node scripts/check-maintenance.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "src",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "CHECKLIST.md",
+    "AGENTS.md",
+    "NOTICE.md",
+    "LICENSE",
+    "publish-npm.mjs",
+    "registry-entry.json",
+    "tests"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "opencode-auth",
+    "provider",
+    "auth",
+    "accio",
+    "accio-work",
+    "alibaba",
+    "qwen",
+    "glm",
+    "deepseek"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MYCF711/magpie-accio-auth.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MYCF711/magpie-accio-auth/issues"
+  },
+  "homepage": "https://github.com/MYCF711/magpie-accio-auth#readme",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij48cmVjdCB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcng9IjI4IiBmaWxsPSIjMTAxYTI2Ii8+PHBhdGggZD0iTTY0IDI2IEw5NiAxMDIgSDgwIEw3MiA4MiBINTYgTDQ4IDEwMiBIMzIgWiBNNjAgNjggSDY4IEw2NCA1MiBaIiBmaWxsPSIjZmY3YTQ1Ii8+PC9zdmc+",
+    "maxConcurrency": 3
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "package": "accio-auth",
+  "name": "Accio",
+  "providers": [
+    "accio"
+  ],
+  "summary": {
+    "en": "Unofficial: Accio (Alibaba Accio Work) subscription models in magpie — Qwen, GLM, DeepSeek, MiniMax, Kimi and more, through an Alibaba sign-in, with per-model rate multipliers and credit buckets read from the account.",
+    "zh": "非官方：Accio（阿里 Accio Work）订阅模型接进 magpie —— Qwen、GLM、DeepSeek、MiniMax、Kimi 等，浏览器里用阿里账号登录，按账号读出真实积分桶，模型带计费倍率。"
+  }
+}
