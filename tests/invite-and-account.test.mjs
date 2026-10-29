@@ -91,38 +91,30 @@ test("fetchInvitation：data 是布尔", async () => {
   } finally { s.restore() }
 })
 
-test("邀请码方法：从 magpie 账号槽取当前 token → commit → query → success", async () => {
-  // 预置 magpie 的账号槽（只读路径）
-  const dir = join(sandbox, ".config", "magpie")
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, "plugin-auth.json"), JSON.stringify({
-    accio: { type: "oauth", access: JSON.stringify(cred), refresh: "rt_test", expires: Date.now() + 3600_000, uid: "sha256:x" },
-  }), "utf8")
-
-  const s = stub([
-    ["/api/invitation/commit", () => json({ success: true, code: "200", data: { success: true } })],
-    ["/api/invitation/query", () => json({ success: true, code: "200", data: true })],
-    ["/api/auth/userinfo", () => json({ success: true, code: "200", data: { userId: "1798171953", maskedMobile: "+86 138****8000" } })],
-  ])
-  try {
-    const hooks = await AccioAuthPlugin({ client: {} })
-    const method = hooks.auth.methods.find((m) => /邀请码/.test(m.label))
-    assert.ok(method, "必须有「邀请码」登录方式")
-    const started = await method.authorize({ code: "IC624891464548" })
-    const outcome = await started.callback()
-    assert.equal(outcome.type, "success")
-    assert.equal(outcome.accountId, "138****8000", "邀请码绑定后卡片也要显示手机号")
-    assert.match(outcome.uid, /^sha256:[0-9a-f]{12}$/)
-    assert.deepEqual(s.calls.filter((c) => c.url.includes("/api/invitation/commit")).length, 1)
-    assert.match(String(outcome.instructions ?? ""), /已提交/)
-  } finally { s.restore() }
-})
-
-test("邀请码方法：没有登录态时明确报错（不静默失败）", async () => {
-  // 上一条用例写过账号槽，这里先清掉
-  const { rmSync } = await import("node:fs")
-  rmSync(join(sandbox, ".config", "magpie", "plugin-auth.json"), { force: true })
+test("邀请码方法：与 magicrew 同款的多步问答（邀请码 → 站点 → 问完）", async () => {
   const hooks = await AccioAuthPlugin({ client: {} })
   const method = hooks.auth.methods.find((m) => /邀请码/.test(m.label))
-  await assert.rejects(() => method.authorize({ code: "IC624891464548" }), /先用「登录 Accio」登录/)
+  assert.ok(method, "必须有「邀请码」登录方式")
+  assert.equal(typeof method.ask, "function", "必须用 ask() 做多步问答，不能只给静态 prompts")
+
+  const first = await method.ask({})
+  assert.equal(first.key, "invite")
+  assert.match(first.placeholder, /邀请码/, "灰色字要说明当前模式/怎么填")
+
+  const second = await method.ask({ invite: "IC624891464548" })
+  assert.equal(second.key, "region", "填完邀请码必须直接接主登录的站点选择，而不是回一句「已保存」")
+
+  assert.equal(await method.ask({ invite: "IC624891464548", region: "cn" }), null)
+})
+
+test("邀请码方法：数字框语义 —— 0/空 沿用策略、其它当新码（resolveInviteChoice）", async () => {
+  // resolveInviteChoice 是 index.mjs 内部函数；通过 _internal 暴露不了，
+  // 这里改用「写入策略码后，邀请码方法的灰色字应显示它」来锁语义。
+  const { writeInviteCode, readInviteCode } = await import("../src/store.mjs")
+  writeInviteCode("IC624891464548", "test")
+  assert.equal(readInviteCode(), "IC624891464548")
+  const hooks = await AccioAuthPlugin({ client: {} })
+  const method = hooks.auth.methods.find((m) => /邀请码/.test(m.label))
+  const p = await method.ask({})
+  assert.match(p.placeholder, /IC624891464548/, "灰色字要显示当前策略里的码")
 })

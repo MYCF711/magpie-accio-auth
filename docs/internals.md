@@ -430,3 +430,23 @@ credentials.enc: "v10" + nonce(12) + ciphertext + tag(16)    ← AES-256-GCM
 
 实测：`importDesktopLogin()` → `{tokenLen:32, refreshLen:128, expires:1795839590000, user:"+86 138****8000"}`；
 方法 callback → `{type:"success", accountId:"138****8000", expires:1795839590000}`。
+
+
+### 12.6 邀请码的插件形态（对齐 magicrew，0.1.4）
+
+与 `magpie-magicrew-auth/src/hooks/methods.mjs` 的「邀请码」逐条对齐：
+
+| 维度 | 超级麦吉 | 本插件（Accio） |
+|---|---|---|
+| 入口 | 独立登录方式 `${SHORT} 邀请码` | `Accio 邀请码` |
+| 输入 | 一个 text 框，placeholder 每次点开现算 | 同款（`inviteHint()`） |
+| 语义 | 0/空=自动、1=首选、其它=码 | 0/空=沿用策略、1=保持当前、其它=新码 |
+| 多步 | `ask()`：邀请码 → 主验证码 | `ask()`：邀请码 → 登录站点 |
+| 保存后 | 直接接 `primaryMethod.authorize()` | 直接接 `beginLogin({inviteCode})` |
+| 策略文件 | `magicrew-invite-policy-<site>.json` | `~/.cache/magpie/accio-invite.json`（`{code, source, at}`） |
+| 标题后缀 | `（上级 <accountId>）` | `（邀请码 IC…）` |
+| 码的来源 | `rollInvite()` 登录后从服务端拿**自己的**码 | **没有查自己码的接口**（`/api/invitation/query` 只返回布尔）⇒ 用「上一次成功使用的码」 |
+
+⚠ **唯一的业务差异**：magicrew 能 `rollInvite` 拿到每个账号自己的邀请码，Accio 没有对应接口
+（客户端「邀请中心」只给分享链接，链接里的 `ic` 是上级的码）。所以这里的「自动」是
+「沿用上次成功用过的码」，首次需要用户填一次 —— 这是接口能力差异，不是实现偷懒。
