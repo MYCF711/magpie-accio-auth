@@ -98,6 +98,20 @@ export const PROVIDER = "accio"
 /** 供应商名（供应商列表里那一行；插件卡片标题来自 package.json 的 name） */
 export const PROVIDER_NAME = "Accio"
 
+/**
+ * 桌面客户端下载页（「无账号 → 跳转下载软件」那条分支用）。
+ *
+ * 实测（2026-10-30，本机直连）：
+ *   GET https://www.accio-ai.com/work  → HTTP 200，12,102 B，标题「Accio Work——您的 AI 商业团队…」
+ *   GET https://www.accio.com/work     → HTTP 200，21,094 B，页面内含 `DownloadUrl` /
+ *                                        `download.accio.com/package/v0.36…` / `Windows (x64)`
+ *   官方安装文档（zh.accio.com/wow/doc-help-install.html）的「下载桌面客户端」也指向 `www.accio.com/work`。
+ *
+ * ⚠ 两个域名只是站点不同（与登录页同一套 CN / 国际站划分），下载走同一个 CDN。
+ */
+export const DOWNLOAD_PAGE_CN = "https://www.accio-ai.com/work"
+export const DOWNLOAD_PAGE_GLOBAL = "https://www.accio.com/work"
+
 /** API 形状：对外仍是 OpenAI chat completions（协议转换在 loader 的 fetch 里做） */
 export const NPM = "@ai-sdk/openai-compatible"
 

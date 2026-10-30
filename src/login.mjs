@@ -211,6 +211,23 @@ export async function refreshCredential(current) {
 const refreshInFlight = new Map()
 
 /**
+ * 续期去重闸的键：**OAuth client + refresh_token 链**。
+ *
+ * ⚠ 为什么不是 provider id / accountId（2026-10 社区 review 的口径）：
+ *   键必须描述**这条 refresh token 链**，不是「哪个账号」。
+ *   - 按 provider id 键控 ⇒ 账号 B 共享账号 A 的续期结果（拿到别人的凭据）；
+ *   - 按 accountId 键控 ⇒ 同一账号重登换了链之后，旧的 in-flight 会挡住新的；
+ *   - 把 `client_id` 放进键里：将来同一 provider 若出现第二个公开客户端，
+ *     两条链不会误合并。今天 `CLIENT_ID` 恒为 `"accio-work"`，行为不变。
+ *
+ * ⚠ **不要**把 region 放进来：region 只决定登录页域名，不改变 token 链；
+ *   放进来会让同一份凭据在两个 region 值下各刷一次（真轮换 token 的厂商会互相踩）。
+ */
+export function refreshKeyOf(credential, clientId = CLIENT_ID) {
+  return `${clientId}\n${credential?.refresh_token ?? ""}`
+}
+
+/**
  * 带并发去重的续期。
  *
  * ⚠ 键必须是**凭据身份**（refresh_token），不是 provider id ——
@@ -218,7 +235,7 @@ const refreshInFlight = new Map()
  *   共享账号 A 的续期结果（拿到别人的凭据，且 B 的 token 根本没被消费）。
  */
 export function refreshOnce(current) {
-  const key = `accio\n${current?.refresh_token ?? ""}`
+  const key = refreshKeyOf(current)
   const pending = refreshInFlight.get(key)
   if (pending !== undefined) return pending
 

@@ -565,7 +565,11 @@ export async function chat({ credential, body: openaiBody, model, index, signal,
     let renewed
     try {
       renewed = await renew(credential)
-    } catch {
+    } catch (e) {
+      // 续期失败一般退回「原凭据 + 上游 401」，让调用方看到上游原文；
+      // 但**终态**（例如「续期成功但凭据写回失败，必须重新登录」）不能吞 ——
+      // 吞了以后用户只看到一句 401，真正的原因（本地凭据已废）永远浮不出来。
+      if (e?.signIn === "expired") throw e
       renewed = undefined
     }
     if (renewed !== undefined && tokenFingerprint(renewed) !== before) {

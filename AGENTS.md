@@ -69,6 +69,10 @@ node ../magpie-plugin-scaffold/scripts/check-magpie-stable.mjs
 | 24 | 点「添加账号」却落进了**已经登录的那个号** | `authorize()` 只回 `{url, method:"auto"}` ⇒ magpie 拿 url 开**系统默认浏览器**（带着你日常的登录态）。必须自己 spawn 一个 `--user-data-dir=<一次性目录>` 的窗口并回 `opened: true` | internals §13.5 |
 | 25 | 账号被卡片标成「已退出登录」（用户没做任何操作） | 这个标记只有一条来路：`usage()` 返回 `signIn: "expired"`（magpie `internal/provider/plugin_usage.go`）。而风控限流时上游回的 `401 NOT_LOGIN` / `403 auth failed` 与**垃圾 token 的报文逐字相同**（实测）⇒ 判据走 `isSignInGone()` 白名单，且**连续两次、间隔 ≥60 s** 才标；单次 401 只报错 | internals §13 |
 | 26 | 网页登录明明成功，却报「拿不到账号信息」/ 登录失败 | 模块级的 `loginCallback` 里引用了只在插件实例里存在的 `log` ⇒ `ReferenceError: log is not defined`。日志必须由调用方传进来 | internals §13.2 ④、`tests/clean-browser.test.mjs` |
+| 27 | 点「登录 Accio」却弹浏览器 / 明明装了客户端还要重新登 | 主入口按 **本机客户端登录态** 分流：有登录态 → 直接导入（`importDesktopLogin()` + `userinfo` 验证）；装了没登录 → 提示打开客户端并等 10 分钟；没装 → 打开下载页并等 10 分钟。**只在 `authorize()` 里读客户端**，不许在加载时读（#522：删掉的号会自己回来） | internals §14.4 |
+| 28 | 卡片手机号变空 / 账号 uid 每轮续期都换一个 | Accio 的 `access_token` 是 32 位 hex **不是 JWT** ⇒ `identityOf()` 恒退 `sha256(refresh_token)`；刷新轮换 token ⇒ uid 漂。`toStored(cred, prev)` 必须承接 `prev.accountId` / `prev.uid` | internals §14.5 |
+| 29 | 一个号续期被拒，另一个好号被一起标成「已退出登录」 | 判终态前先 `latestCredentialFor()` 回读 `plugin-auth.json`：`refresh` 已不是本次那份 ⇒ 他处已续成功，用最新的、**不抛** `signIn:expired`；认不准 ⇒ 不标死。magpie 宿主只管 `auth.refresh` 钩子，**loader 内续期要插件自己兜** | internals §14.6 |
+| 30 | 改了登录方式列表，老用户点登录行为错位 | magpie 用 `auth.methods[method]` **下标**选方法 —— 不许删槽/改长度。旧「从本机客户端导入」槽改成「网页授权」，下标保持 0/1/2 | internals §14.4 |
 
 ---
 
@@ -138,14 +142,14 @@ magpie plugin list | grep -A2 accio
 index.mjs           九项钩子的装配（config / auth 五钩 / provider.models / chat.headers）
 src/constants.mjs   端点、常量、占位 baseURL
 src/credential.mjs  凭据读写、秒→毫秒（含日期字符串）、uid 判定
-src/login.mjs       PKCE + loopback 回调、续期、并发去重闸
+src/login.mjs       PKCE + loopback 回调、续期、并发去重闸（键 = OAuth client + refresh 链）
 src/browser.mjs     自己拉起**干净 profile** 的登录窗口（添加账号不许借系统浏览器的登录态）
 src/api.mjs         模型目录、额度（信封判据与 `isSignInGone` 只在这里定义一次）
 src/models.mjs      slug ↔ modelCode、模型条目字段、兜底表
 src/chat.mjs        OpenAI ⇄ Accio 双向转换（信封 + SSE）
 src/transport.mjs   传输级重试（只重试连接类错误）
-src/desktop.mjs     本机 Accio 客户端登录态导入（DPAPI + AES-GCM）
-src/store.mjs       utdid、每账号目录快照、登录失效的连续确认计数（只写 ~/.cache/magpie）
+src/desktop.mjs     本机 Accio 客户端登录态：探测 / 导入（DPAPI + AES-GCM）/ 等登录（≤10 分钟）
+src/store.mjs       utdid、每账号目录快照、登录失效确认计数、**续期链回读**（只写 ~/.cache/magpie）
 src/quota.mjs       额度窗口构造器（写错直接抛）
 ```
 

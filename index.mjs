@@ -39,8 +39,10 @@
 
 import {
   APP_VERSION,
+  DOWNLOAD_PAGE_CN,
   EXPIRY_LEAD_MS,
   LOGIN_BASE_CN,
+  LOGIN_TIMEOUT_MS,
   NPM,
   PLACEHOLDER_BASE,
   PROVIDER,
@@ -55,6 +57,7 @@ import {
   SIGNIN_CONFIRM_STRIKES,
   accountKeyOf,
   clearSignInGone,
+  latestCredentialFor,
   noteSignInGone,
   readInviteCode,
   readInviteSid,
@@ -63,7 +66,7 @@ import {
   writeInviteCode,
   writeModels,
 } from "./src/store.mjs"
-import { importDesktopLogin } from "./src/desktop.mjs"
+import { hasDesktopApp, hasDesktopLogin, importDesktopLogin, waitForDesktopLogin } from "./src/desktop.mjs"
 import { launchLoginBrowser } from "./src/browser.mjs"
 
 /** 内嵌图标（自绘 SVG，13 行；不引用厂商素材）。`package.json` 的 `magpie.icon` 是同一份。 */
@@ -166,6 +169,66 @@ function cleanBrowserNote(browserName) {
 }
 
 /**
+ * 「从本机 Accio 客户端导入」的 callback —— #0「登录 Accio」的有账号分支用它。
+ *
+ * 为什么要先打一次 `userinfo`：客户端文件可能是一份**已经失效**的登录态
+ * （客户端退出登录后文件未必立刻消失）。只读文件就报成功，会把死凭据写进
+ * magpie，下一请求就 401。`userinfo` 既验证可用，又顺手拿到卡片要的手机号。
+ */
+function desktopImportCallback(desk, log) {
+  return async function callback() {
+    try {
+      const got = desk.importDesktopLogin()
+      if (!got) {
+        return {
+          type: "failed",
+          error: "没找到本机 Accio 客户端的登录态：打开 Accio 客户端登录一次，再回来点「登录 Accio」。",
+        }
+      }
+      const info = await fetchUserInfo(got.credential).catch((e) => {
+        log(`用客户端凭据取账号信息失败：${e?.message ?? e}`, "warn")
+        return null
+      })
+      if (!info?.userId) {
+        return {
+          type: "failed",
+          error: "读到了本机 Accio 客户端的凭据，但它已经失效（userinfo 取不到账号）——请在客户端重新登录一次再试。",
+        }
+      }
+      return {
+        type: "success",
+        access: JSON.stringify(got.credential),
+        refresh: got.credential.refresh_token,
+        expires: expiryMs(got.credential),
+        accountId: accountLabelOf(info),
+        uid: identityOf(got.credential),
+      }
+    } catch (e) {
+      return { type: "failed", error: `读取客户端登录态失败：${String(e?.message ?? e).slice(0, 300)}` }
+    }
+  }
+}
+
+/**
+ * 「本机还没账号」分支：已经打开了下载页，这里等客户端登录态出现（≤10 分钟）再导入。
+ *
+ * ⚠ 一次点击走完 —— 用户装好、在客户端里登录，这边自动接上；超时才让他重来一次。
+ */
+function waitThenImportCallback(desk, log) {
+  const doImport = desktopImportCallback(desk, log)
+  return async function callback() {
+    const ok = await desk.waitForDesktopLogin({ timeoutMs: LOGIN_TIMEOUT_MS })
+    if (!ok) {
+      return {
+        type: "failed",
+        error: "还没检测到 Accio 客户端的登录态（等了 10 分钟）：把客户端装好、登录一次，再点一次「登录 Accio」。",
+      }
+    }
+    return doImport()
+  }
+}
+
+/**
  * 「邀请码」方法拿不到 getAuth()（magpie 的 method 契约只有 inputs），
  * 从 magpie 自己的账号槽里找当前 accio 账号；多个账号时不猜，让用户去账号页确认。
  */
@@ -182,7 +245,7 @@ const ICON =
 /** 账号目录快照的键（per-account，见 src/store.mjs） */
 const keyOf = (cred) => accountKeyOf(cred?.refresh_token)
 
-export const AccioAuthPlugin = async ({ client, launcher } = {}) => {
+export const AccioAuthPlugin = async ({ client, launcher, desktop } = {}) => {
   const log = (msg, level = "info") => {
     try {
       client?.app?.log?.({ service: "accio", level, message: msg })
@@ -195,24 +258,86 @@ export const AccioAuthPlugin = async ({ client, launcher } = {}) => {
   // 否则「添加账号」这条路径没法在 CI/无 GUI 环境下验证。
   const openBrowser = typeof launcher === "function" ? launcher : launchLoginBrowser
 
+  // 本机客户端的三件事（探测 / 导入 / 等登录）。测试注入假的，不碰真实 APPDATA。
+  const desk = desktop ?? { hasDesktopApp, hasDesktopLogin, importDesktopLogin, waitForDesktopLogin }
+
   /** 把续期后的凭据写回 magpie（`client.auth.set` 是整体替换，不是合并）。 */
   const saveAuth = async (cred, prev) => {
     const set = client?.auth?.set
-    if (typeof set !== "function") return false
+    // 宿主没有写入口（非 magpie 形态 / 单测）⇒ 「无从写」不是「写失败」：
+    // 不能据此把账号判死（magpie 的 host.js 恒提供 auth.set）。
+    if (typeof set !== "function") return true
     try {
       await set({ path: { id: PROVIDER }, body: toStored(cred, prev) })
       return true
     } catch (e) {
-      // 写回失败不阻断请求 —— magpie 自己的 refreshLead 还会再试一次
       log(`凭据写回失败：${e?.message ?? e}`, "warn")
       return false
     }
   }
 
-  /** 硬续期（异常透传），走按凭据身份键控的去重闸。 */
-  const renew = async (current, prev) => {
-    const next = await refreshOnce(current)
-    await saveAuth(next, prev)
+  /**
+   * 硬续期（异常透传），走按凭据身份键控的去重闸。
+   *
+   * @param {object} current 本次要刷的那份凭据
+   * @param {object} prev    它在 magpie 里的整条记录（判终态前要用它回读账号槽）
+   * @param {{persistRequired?: boolean}} [opts]
+   *   `persistRequired`：这条路径上**没有第二个人会把新凭据落盘**（loader 内续期）。
+   *   此时 `client.auth.set` 失败 = 「服务端那份旧 refresh 已被消费，本地还停在旧的」，
+   *   必须当终态（Jet Hub `expiry-sync.ts` 的同一条教训），否则账号会静默死；
+   *   而 `auth.refresh` 钩子那条路 magpie 会**锁内落盘**（`host.js` 的 `renewLocked`），
+   *   所以那里**不要**开这个开关 —— 开了会把一次「宿主自己会写」的情况误报成失效。
+   *
+   * ═══ 判终态前先重读「自己的链」═══════════════════════════════════════
+   *
+   * Accio 的刷新**轮换** refresh_token。两个 magpie 实例（或 loader 内硬续期 +
+   * 宿主定时续期）同时拿同一份旧 token 去刷时，一个成功、另一个必然
+   * `invalid_grant`。失败那个若直接判「登录失效」，就会把**已经被别人续好的
+   * 好账号标死**（社区 review 的口径：按 refresh chain 协调，不按 account）。
+   * ⇒ 被拒时回读 `plugin-auth.json`：这个账号的 `refresh` 已经不是本次用的那份
+   *   ⇒ 他处已续成功，改用最新的那份继续，不抛 `signIn:"expired"`。
+   *
+   * ⚠ magpie 0.1.2145 的宿主自己也有一层同等保护（`host.js` 的 `renewLocked`：
+   *   失败时 `changed(all[key], was)` ⇒ 只记 `renewed elsewhere meanwhile`）。
+   *   但那是**宿主发起的**续期才有的；插件在 `loader().fetch` 里的续期绕过了宿主
+   *   的跨进程锁 —— 这一层正是补那个缺口。
+   */
+  const renew = async (current, prev, { persistRequired = false } = {}) => {
+    let next
+    try {
+      next = await refreshOnce(current)
+    } catch (e) {
+      if (isTerminalRefreshError(e)) {
+        const latest = latestCredentialFor(PROVIDER, prev)
+        if (latest?.changed === true) {
+          const fresh = credentialOf(latest.value)
+          if (fresh) {
+            log(`续期被上游拒绝，但凭据已被他处更新（${latest.key}），改用最新凭据、不标失效`, "info")
+            return fresh
+          }
+        }
+        if (latest?.changed === "unknown") {
+          // 认不准是不是「他处已续」：**不标死**，抛普通错误让 magpie 下一轮再试。
+          // ⚠ 文案里不许出现 invalid_grant / refresh token 之类的终态标记 ——
+          //    refresh() 钩子会用 isTerminalRefreshError 再判一次。
+          throw Object.assign(
+            new Error(`Accio 续期被拒，但无法确认本地凭据是否已被他处更新（${latest.reason}）——本轮不标记账号，稍后重试`),
+            { retryable: true },
+          )
+        }
+      }
+      throw e
+    }
+
+    const saved = await saveAuth(next, prev)
+    if (!saved && persistRequired) {
+      throw Object.assign(
+        new Error(
+          "Accio 续期成功但凭据写回失败：服务端那边的旧 refresh_token 已经消费，本地仍是旧 token，请重新登录",
+        ),
+        { signIn: "expired", refreshWriteFailed: true },
+      )
+    }
     return next
   }
 
@@ -281,82 +406,85 @@ export const AccioAuthPlugin = async ({ client, launcher } = {}) => {
       refreshLead: EXPIRY_LEAD_MS,
 
       // ═══ ② 登录 ═══════════════════════════════════════════════════
+      /**
+       * 三条登录方式（**方法下标不能删**：magpie 用 `auth.methods[method]` 下标选方法）：
+       *
+       *   0 「登录 Accio」            ← 软件优先：有客户端登录态就导入，没有就开下载页等着
+       *   1 「登录 Accio（网页授权）」 ← 干净 profile 浏览器（添加另一个号 / 不装客户端）
+       *   2 「Accio 邀请码」          ← 不变
+       *
+       * ⚠ 旧版下标 1 是「从本机 Accio 客户端导入」。那个行为已并入 #0 的自动分流，
+       *   但**槽位保留**（改成网页授权），删掉会让已存的用户选择错位。
+       */
       methods: [
         {
           type: "oauth",
           label: `登录 ${PROVIDER_NAME}（阿里 Accio Work）`,
           /**
-           * 两个登录入口，但**同一个供应商**：换码、目录、对话、额度都在
-           * phoenix-gw.alibaba.com —— 站点只决定登录页域名。
-           * 判据见 README「一个站点还是两个」。
+           * 主人 2026-10-30 的口径：「无账号才跳转下载软件，有账号直接走软件登录」。
            *
-           * 邀请码不在这里问：与 magicrew 同款，邀请码有独立的登录方式，
-           * 保存后由 `readInviteCode()` 自动带上；这样「登录 Accio」永远只问站点。
+           * 这里的「账号」= **本机 Accio 客户端里的登录态**（不是 magpie 账号列表）：
+           *   · 有 → 直接读客户端凭据（0 交互、不弹浏览器）；
+           *   · 没有 → 打开客户端下载页，并**继续等**（最多 10 分钟）——
+           *     用户装好、在客户端里登录，这边自动接上，不用回来再点一次。
+           *
+           * 无 prompts：软件登录用不上「登录站点」（客户端凭据自带 region）。
            */
-          prompts: [REGION_PROMPT],
-
-          /**
-           * ⚠ **立刻返回**，不能在这里等用户完成登录 —— 真正等的是 callback()。
-           *   死等会让双方互等（magpie 要等 url 才开浏览器）。
-           *   但「立刻返回」指的是不等**登录结果**：拉起浏览器本身是同步做完的
-           *   （起不来就当场抛错，而不是把 url 丢给 magpie 用系统浏览器开）。
-           */
-          async authorize(inputs) {
-            const region = inputs?.region === "global" ? "global" : "cn"
-            const inviteCode = readInviteCode()
-            return startCleanLogin({ region, inviteCode, inviteSid: readInviteSid() })
+          async authorize() {
+            if (desk.hasDesktopLogin()) {
+              return {
+                // 不需要浏览器：契约要求 url，标记 opened 让 magpie 别再开
+                url: LOGIN_BASE_CN,
+                opened: true,
+                method: "auto",
+                instructions: "检测到本机 Accio 客户端的登录态，正在导入（不弹浏览器）…",
+                callback: desktopImportCallback(desk, log),
+              }
+            }
+            // 装了客户端但还没登录：不要让他再下载一次，提示打开客户端登录
+            if (typeof desk.hasDesktopApp === "function" && desk.hasDesktopApp()) {
+              return {
+                url: LOGIN_BASE_CN,
+                opened: true,
+                method: "auto",
+                instructions:
+                  "本机装了 Accio 客户端，但还没有读到登录态：打开 Accio 客户端登录一次，这里会自动接上（最多等 10 分钟）。",
+                callback: waitThenImportCallback(desk, log),
+              }
+            }
+            return {
+              url: DOWNLOAD_PAGE_CN,
+              // 下载页不需要登录态，交给 magpie 用系统浏览器打开即可
+              opened: false,
+              method: "auto",
+              instructions:
+                `本机还没有 Accio 登录态：已打开客户端下载页 ${DOWNLOAD_PAGE_CN}\n` +
+                "装好并在客户端里登录后，这里会自动接上（最多等 10 分钟），不用再点一次。\n" +
+                "想添加另一个账号、或者不想装客户端：用下面的「登录 Accio（网页授权）」。",
+              callback: waitThenImportCallback(desk, log),
+            }
           },
         },
         {
           /**
-           * 从本机 Windows 客户端导入 —— 免登录、免滑块。
+           * 网页授权（2026-10-30 起）：**干净 profile** 的浏览器窗口。
            *
-           * 官方客户端登录后把 accessToken / refreshToken / expiresAt / sgcookie 写在
-           * `%APPDATA%\Accio\credentials.enc`（Chromium OSCrypt v10，DPAPI 保护）。
-           * 它与网站 OAuth 是**同一套 token**，所以直接拿来就能用（详见 src/desktop.mjs 头）。
+           * `authorize()` 只回 `{url, method:"auto"}` 时，magpie 拿它开**系统默认浏览器** ——
+           * 那个浏览器里带着用户日常的 Accio 会话，点「添加账号」会直接落到**已经登录的号**上
+           * （主人 2026-10-30 的原话：「添加账号就会导入之前的登录态」）。
+           * 所以这里自己拉一个 `--user-data-dir=<一次性目录>` 的窗口，并回 `opened: true`
+           * 告诉 magpie「页面已经由我打开了，你别再开一遍」（HOOKS.md 陷阱 3）。
            *
-           * 没有客户端 / 客户端没登录 / 凭据过期 → 明确报错，让用户走网页登录。
+           * 起不来浏览器时**明确报错，不静默退回系统浏览器** —— 退回就等于把「落到旧账号」
+           * 这个 bug 又放回来，而用户完全看不出发生了什么。
            */
           type: "oauth",
-          label: "从本机 Accio 客户端导入（免登录）",
-          async authorize() {
-            return {
-              // 不需要浏览器：契约要求 url，标记 opened 让 magpie 别再开
-              url: LOGIN_BASE_CN,
-              opened: true,
-              method: "auto",
-              instructions: "正在读取本机 Accio 客户端的登录态…",
-
-              async callback() {
-                try {
-                  const got = importDesktopLogin()
-                  if (!got) {
-                    return {
-                      type: "failed",
-                      error: "没找到本机 Accio 客户端的登录态。先在「Accio」客户端里登录一次，再回来点这个；没有客户端就用「登录 Accio」。",
-                    }
-                  }
-                  // 用导入的 token 真打一次 userinfo：既验证凭据可用，也顺手拿账号名
-                  const info = await fetchUserInfo(got.credential).catch(() => null)
-                  if (!info?.userId) {
-                    return {
-                      type: "failed",
-                      error: "读到了客户端凭据，但它已经失效（userinfo 取不到账号）——请在客户端重新登录一次再试。",
-                    }
-                  }
-                  return {
-                    type: "success",
-                    access: JSON.stringify(got.credential),
-                    refresh: got.credential.refresh_token,
-                    expires: expiryMs(got.credential),
-                    accountId: accountLabelOf(info),
-                    uid: identityOf(got.credential),
-                  }
-                } catch (e) {
-                  return { type: "failed", error: `读取客户端登录态失败：${String(e?.message ?? e).slice(0, 300)}` }
-                }
-              },
-            }
+          label: `登录 ${PROVIDER_NAME}（网页授权，不装客户端）`,
+          prompts: [REGION_PROMPT],
+          async authorize(inputs) {
+            const region = inputs?.region === "global" ? "global" : "cn"
+            const inviteCode = readInviteCode()
+            return startCleanLogin({ region, inviteCode, inviteSid: readInviteSid() })
           },
         },
         {
@@ -415,6 +543,8 @@ export const AccioAuthPlugin = async ({ client, launcher } = {}) => {
             uid: stored.uid,
           }
         } catch (e) {
+          // 已经是终态（比如「续期成功但写回失败」那条自带 signIn）→ 原样抛
+          if (e?.signIn === "expired") throw e
           if (isTerminalRefreshError(e)) {
             // refresh_token 真的不能用了 → 标记账号，不再重试直到重新登录
             throw Object.assign(new Error("Accio 续期失败，请重新登录"), { signIn: "expired" })
@@ -442,6 +572,8 @@ export const AccioAuthPlugin = async ({ client, launcher } = {}) => {
 
             // 临期软续期：失败不抛、沿用原凭据（与 Gyl1219 hub 的 ensureAuth 同口径）。
             // 真正确凿的失效由下方 chat 的 401 硬续期兜底。
+            // ⚠ 这里**不开** persistRequired：写回失败时这条请求仍该用内存里的新 token 试一次
+            //（开了会退回旧 token，反而把一次可能成功的请求作废）；落盘问题的终态由 401 硬续期收口。
             if (nearExpiry(current, EXPIRY_LEAD_MS)) {
               try {
                 current = await renew(current, fresh)
@@ -488,7 +620,8 @@ export const AccioAuthPlugin = async ({ client, launcher } = {}) => {
               signal: init?.signal,
               extraHeaders,
               // 硬续期：失败抛，才能与「续期成功但没变化」区分开
-              renew: () => renew(current, fresh),
+              // ⚠ in-path：没有宿主替我们落盘 ⇒ persistRequired
+              renew: () => renew(current, fresh, { persistRequired: true }),
             })
           },
         }
