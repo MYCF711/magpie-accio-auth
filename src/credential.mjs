@@ -174,10 +174,28 @@ export function identityOf(cred) {
  * ⚠ 这个函数的输出会被 magpie 存进 plugin-auth.json。
  *   改形状就等于让老用户的登录态失效 —— 不要改。
  *
+ * ═══ 为什么必须承接 prev 的两个字段（2026-10-30 实测）═══════════════
+ *
+ * Accio 的 `access_token` 是 **32 位 hex、不是 JWT**（`split('.')` 长度 1），
+ * 于是 `identityOf()` 永远走 `sha256(refresh_token)` 那条兜底 —— 而刷新会
+ * **轮换 refresh_token** ⇒ **每续期一次 uid 就变一次**。同时换码/续期响应
+ * 里没有 `accountId`（手机号是 `userinfo` 才有的）。
+ *
+ * 旧实现直接写 `cred.accountId ?? ""` / `identityOf(cred)`，后果：
+ *   · 续期路径（`saveAuth`）把卡片上的手机号**抹成空串**；
+ *   · uid 每次续期都漂，magpie 的账号身份与去重跟着漂。
+ *
+ * ⇒ 续期时把 prev 的 `accountId` / `uid` 承接过来（续的是同一个号）；
+ *   新登录（prev 为空）仍按凭据生成，行为与以前一致。
+ *
  * @param {object} cred   完整凭据
- * @param {object} [prev] 上一份记录（保留 type 等字段）
+ * @param {object} [prev] 上一份记录（保留 type / accountId / uid 等字段）
  */
 export function toStored(cred, prev) {
+  const keepAccountId = typeof prev?.accountId === "string" && prev.accountId !== ""
+    ? prev.accountId
+    : ""
+  const keepUid = typeof prev?.uid === "string" && prev.uid !== "" ? prev.uid : ""
   return {
     ...(prev ?? {}),
     type: "oauth",
@@ -185,8 +203,8 @@ export function toStored(cred, prev) {
     access: JSON.stringify(cred),
     refresh: cred.refresh_token ?? "",
     // Accio 不给账号名 —— 空字符串让 magpie 三级回退落到供应商名，不编一个假的
-    accountId: typeof cred.accountId === "string" ? cred.accountId : "",
-    uid: identityOf(cred),
+    accountId: typeof cred.accountId === "string" && cred.accountId !== "" ? cred.accountId : keepAccountId,
+    uid: keepUid || identityOf(cred),
   }
 }
 

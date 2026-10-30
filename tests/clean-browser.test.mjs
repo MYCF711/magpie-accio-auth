@@ -213,7 +213,7 @@ test("authorize：自己开浏览器（opened: true），不再把 url 交给 ma
     return { name: "Chrome", profileDir: join(sandbox, "fake"), exit: new Promise(() => {}), close: () => {}, child }
   }
   const hooks = await AccioAuthPlugin({ client: {}, launcher })
-  const method = hooks.auth.methods.find((m) => m.label.includes("登录 Accio"))
+  const method = hooks.auth.methods[1] /* 网页授权：下标 1 的槽保留 */
   const got = await method.authorize({ region: "cn" })
   try {
     assert.equal(got.opened, true, "opened: true 才会让 magpie 不再开一遍系统浏览器")
@@ -239,7 +239,7 @@ test("authorize：拉不起浏览器 → 抛错，不静默退回系统浏览器
     throw new Error("没能自己拉起浏览器登录：本机没找到可用的 Chromium 内核浏览器。")
   }
   const hooks = await AccioAuthPlugin({ client: {}, launcher })
-  const method = hooks.auth.methods.find((m) => m.label.includes("登录 Accio"))
+  const method = hooks.auth.methods[1] /* 网页授权：下标 1 的槽保留 */
   await assert.rejects(() => method.authorize({ region: "cn" }), /没找到可用的 Chromium 内核浏览器/)
 })
 
@@ -258,7 +258,7 @@ test("用户中途关窗 → callback 立刻回失败原因（不干等 10 分�
     },
   })
   const hooks = await AccioAuthPlugin({ client: {}, launcher })
-  const method = hooks.auth.methods.find((m) => m.label.includes("登录 Accio"))
+  const method = hooks.auth.methods[1] /* 网页授权：下标 1 的槽保留 */
   const got = await method.authorize({ region: "cn" })
   fireExit({ code: 0, signal: null, ms: 45_000 })
   const res = await got.callback()
@@ -275,7 +275,7 @@ test("窗口一起来就秒退 → 提示「换个浏览器」，而不是怪用
   })
   const launcher = async () => ({ name: "360浏览器", profileDir: join(sandbox, "fake-quick"), exit, close: () => {} })
   const hooks = await AccioAuthPlugin({ client: {}, launcher })
-  const method = hooks.auth.methods.find((m) => m.label.includes("登录 Accio"))
+  const method = hooks.auth.methods[1] /* 网页授权：下标 1 的槽保留 */
   const got = await method.authorize({ region: "cn" })
   fireExit({ code: 1, signal: null, ms: 240 })
   const res = await got.callback()
@@ -302,7 +302,7 @@ test("回调已经收到之后再关窗，不算失败（换 token 还在飞）"
   try {
     const launcher = async () => ({ name: "Chrome", profileDir: join(sandbox, "fake-race"), exit, close: () => {} })
     const hooks = await AccioAuthPlugin({ client: {}, launcher })
-    const method = hooks.auth.methods.find((m) => m.label.includes("登录 Accio"))
+    const method = hooks.auth.methods[1] /* 网页授权：下标 1 的槽保留 */
     const got = await method.authorize({ region: "cn" })
     const u = new URL(got.url)
     await realFetch(`${u.searchParams.get("return_url")}?code=c9&state=${u.searchParams.get("state")}`)
@@ -331,7 +331,7 @@ test("完整往返：回调带对 state → 换码成功 → callback 返回 suc
   try {
     const launcher = async () => ({ name: "Chrome", profileDir: join(sandbox, "fake3"), exit: new Promise(() => {}), close: () => { closed.v = true } })
     const hooks = await AccioAuthPlugin({ client: {}, launcher })
-    const method = hooks.auth.methods.find((m) => m.label.includes("登录 Accio"))
+    const method = hooks.auth.methods[1] /* 网页授权：下标 1 的槽保留 */
     const got = await method.authorize({ region: "cn" })
 
     const authorizeUrl = new URL(got.url)
@@ -369,7 +369,7 @@ test("登录成功但 userinfo 取不到（风控限流）→ 仍算成功，不
   try {
     const launcher = async () => ({ name: "Chrome", profileDir: join(sandbox, "fake4"), exit: new Promise(() => {}), close: () => {} })
     const hooks = await AccioAuthPlugin({ client: {}, launcher })
-    const method = hooks.auth.methods.find((m) => m.label.includes("登录 Accio"))
+    const method = hooks.auth.methods[1] /* 网页授权：下标 1 的槽保留 */
     const got = await method.authorize({ region: "cn" })
     const u = new URL(got.url)
     await realFetch(`${u.searchParams.get("return_url")}?code=c1&state=${u.searchParams.get("state")}`)
@@ -382,11 +382,11 @@ test("登录成功但 userinfo 取不到（风控限流）→ 仍算成功，不
   }
 })
 
-test("导入本机客户端那条路保持原样：不拉浏览器（opened: true，显式导入不算错）", async () => {
-  let called = 0
-  const hooks = await AccioAuthPlugin({ client: {}, launcher: async () => { called += 1; throw new Error("不该被调用") } })
-  const method = hooks.auth.methods.find((m) => m.label.includes("从本机 Accio 客户端导入"))
-  const got = await method.authorize()
-  assert.equal(got.opened, true)
-  assert.equal(called, 0, "导入路径本来就不该开浏览器")
+test("方法下标不位移：0=登录 Accio（软件优先）、1=网页授权、2=邀请码（删下标会让已存选择错位）", async () => {
+  const hooks = await AccioAuthPlugin({ client: {} })
+  const labels = hooks.auth.methods.map((m) => m.label)
+  assert.equal(labels.length, 3, "槽位数不许变 —— magpie 用 auth.methods[method] 下标选方法")
+  assert.match(labels[0], /登录 Accio（阿里 Accio Work）/)
+  assert.match(labels[1], /网页授权/)
+  assert.match(labels[2], /邀请码/)
 })
