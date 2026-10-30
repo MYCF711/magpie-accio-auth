@@ -66,6 +66,9 @@ node ../magpie-plugin-scaffold/scripts/check-magpie-stable.mjs
 | 21 | 账号卡片只有「Signed in」，看不出是哪个号 | 官方 `POST /api/auth/userinfo` body 必须是 `{"accessToken":…}`（放 `token` 回 400；GET/Authorization 回 405）；`maskedMobile` 就是卡片名 | internals §12.2 |
 | 22 | 邀请码填了但上级没拿到奖励 | 新号的邀请关系只能在**登录 URL** 上带 `?ic=…&tenant=accio&src=p_referral_…&source=invite_center`；`/api/invitation/commit` 的字段名是 `code`，不是 `invitationCode` | internals §12.3 |
 | 23 | 邀请码「填完就结束」，没有接着登录 | magpie 的多步问答是 `ask(inputs)`（不是 `prompts` 数组）：没问完就返回下一个 prompt，问完返回 `null`；authorize 里保存策略后**直接调用主登录**（magicrew 同款） | internals §12.6 |
+| 24 | 点「添加账号」却落进了**已经登录的那个号** | `authorize()` 只回 `{url, method:"auto"}` ⇒ magpie 拿 url 开**系统默认浏览器**（带着你日常的登录态）。必须自己 spawn 一个 `--user-data-dir=<一次性目录>` 的窗口并回 `opened: true` | internals §13.5 |
+| 25 | 账号被卡片标成「已退出登录」（用户没做任何操作） | 这个标记只有一条来路：`usage()` 返回 `signIn: "expired"`（magpie `internal/provider/plugin_usage.go`）。而风控限流时上游回的 `401 NOT_LOGIN` / `403 auth failed` 与**垃圾 token 的报文逐字相同**（实测）⇒ 判据走 `isSignInGone()` 白名单，且**连续两次、间隔 ≥60 s** 才标；单次 401 只报错 | internals §13 |
+| 26 | 网页登录明明成功，却报「拿不到账号信息」/ 登录失败 | 模块级的 `loginCallback` 里引用了只在插件实例里存在的 `log` ⇒ `ReferenceError: log is not defined`。日志必须由调用方传进来 | internals §13.2 ④、`tests/clean-browser.test.mjs` |
 
 ---
 
@@ -136,12 +139,13 @@ index.mjs           九项钩子的装配（config / auth 五钩 / provider.mode
 src/constants.mjs   端点、常量、占位 baseURL
 src/credential.mjs  凭据读写、秒→毫秒（含日期字符串）、uid 判定
 src/login.mjs       PKCE + loopback 回调、续期、并发去重闸
-src/api.mjs         模型目录、额度（信封判据只在这里定义一次）
+src/browser.mjs     自己拉起**干净 profile** 的登录窗口（添加账号不许借系统浏览器的登录态）
+src/api.mjs         模型目录、额度（信封判据与 `isSignInGone` 只在这里定义一次）
 src/models.mjs      slug ↔ modelCode、模型条目字段、兜底表
 src/chat.mjs        OpenAI ⇄ Accio 双向转换（信封 + SSE）
 src/transport.mjs   传输级重试（只重试连接类错误）
 src/desktop.mjs     本机 Accio 客户端登录态导入（DPAPI + AES-GCM）
-src/store.mjs       utdid、每账号目录快照（只写 ~/.cache/magpie）
+src/store.mjs       utdid、每账号目录快照、登录失效的连续确认计数（只写 ~/.cache/magpie）
 src/quota.mjs       额度窗口构造器（写错直接抛）
 ```
 
@@ -152,6 +156,7 @@ src/quota.mjs       额度窗口构造器（写错直接抛）
 | 文件 | 管什么 | 什么时候读 |
 |---|---|---|
 | [README](./README.md) | 用户门面：能拿到什么、模型、安装、常见问题 | 改用户可见行为时 |
+| [MAINTENANCE.md](./MAINTENANCE.md) | **维护台账**：现在在哪一步、下一步、硬约束、最短路径 | **接手这个仓库的第一件事** |
 | [docs/internals.md](./docs/internals.md) | 端点实测、登录、续期、对话协议、额度、身份、**借鉴清单** | **改代码前按章查** |
 | [CHANGELOG.md](./CHANGELOG.md) | 每版一节 | 写新版本时 |
 | [CHECKLIST.md](./CHECKLIST.md) | 两张勾选表 | 两个交付门 |

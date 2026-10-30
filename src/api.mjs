@@ -22,6 +22,20 @@
 //   对话   token 在 **body** 的 `token` 字段（放 Authorization 头恒流内 402）
 //
 // ═══════════════════════════════════════════════════════════════════
+// 「上游说不认识这个 token」≠「账号被吊销」（2026-10-30 实测）
+// ═══════════════════════════════════════════════════════════════════
+//
+// 在被阿里 sentinel 风控的出口 IP 上：
+//
+//   POST /api/auth/userinfo          → 200 {"success":false,"code":"555","message":"blocked by sentinel rate limit"}
+//   POST /api/llm/config/v2  (真 token) → 200 {"success":false,"code":"403","message":"auth failed"}
+//   GET  /api/entitlement/* (真 token) → 200 {"success":false,"code":"401","message":"NOT_LOGIN"}
+//   同上，把 token 换成一串垃圾      → **逐字相同**
+//
+// ⇒ 判登录失效的判据写在 `isSignInGone()` 里（白名单 + 先排风控/限流），
+//   不在调用点各自发挥。对照实验与时间线见 docs/internals.md §13。
+//
+// ═══════════════════════════════════════════════════════════════════
 
 import {
   CATALOG_PATH,
@@ -46,6 +60,54 @@ export class SignInError extends Error {
   }
 }
 
+/**
+ * 上游**明说**「登录没了」的措辞 —— 只有命中它（或 HTTP / body 的 401）才允许判登录失效。
+ *
+ * ⚠ 为什么要一张白名单而不是「401/403 一律算」（2026-10-30 实测，见 docs/internals.md §13）：
+ *   在**被阿里 sentinel 风控的出口 IP** 上，`userinfo` 回
+ *   `{"code":"555","message":"blocked by sentinel rate limit"}`，
+ *   而 catalog / entitlement 回的是 `403 auth failed` / `401 NOT_LOGIN` ——
+ *   与拿垃圾 token 打过去**逐字一样**。也就是说这两个码表达的是
+ *   「这个 token 我不认」，而**不**必然是「这个号被吊销了」。
+ *   判错了的代价是账号被 magpie 标死、要人工重登，所以宁可不判。
+ */
+const AUTH_GONE_WORDS =
+  /NOT_?LOGIN|not\s+logged\s+in|login\s+(?:required|expired)|please\s+(?:sign|log)\s?in|sign[-\s]?in\s+(?:required|expired)|token\s+(?:is\s+)?(?:invalid|expired|revoked|not\s+found)|invalid\s+(?:access\s+)?token|unauthenticated|auth(?:entication)?\s+failed|未登录|请重新登录|登录(?:已)?(?:过期|失效)/i
+
+/** 明确「暂时性」的措辞 —— 命中它一律**不**判登录失效（风控 / 限流 / 超时 / 网关）。 */
+const TRANSIENT_WORDS =
+  /sentinel|blocked\s+by|rate\s*limit|too\s+many\s+requests|throttl|limit\s+exceeded|限流|风控|频率限制|访问频繁|请求过快|请稍后|稍后重试|系统繁忙|服务繁忙|timeout|timed?\s*out|超时|bad\s+gateway|service\s+unavailable|网关(?:异常|错误)/i
+
+/** 风控 / 网关的代号：不是登录语义。 */
+const TRANSIENT_CODES = new Set(["429", "500", "501", "502", "503", "504", "555", "999"])
+
+/**
+ * 这份失败报文算不算「登录失效」—— **纯函数，测试直接钉它**。
+ *
+ * 顺序即判据，四条都不能动：
+ *   ① 传输层/风控层：HTTP 429、HTTP ≥500、风控代号（555…）、限流措辞 → **不是**
+ *   ② 402 = 没钱（Accio 对话流里 `{"error_code":"402","error_message":"unauthorized"}`
+ *      就带 `unauthorized` 字样，先拦掉，别被措辞骗了）→ **不是**
+ *   ③ 明说登录没了的措辞（`NOT_LOGIN` / `auth failed` / `未登录` …）→ **是**
+ *   ④ 没有措辞时：只认 401（HTTP 或 body 的 code）—— HTTP 401 的语义就是未认证；
+ *      **403 不认**：权限、WAF、风控都会回 403，它的措辞必须是 auth 类才算
+ *
+ * @param {number} status HTTP 状态码
+ * @param {any} body 解析后的响应体
+ * @returns {boolean}
+ */
+export function isSignInGone(status, body) {
+  const code = String(body?.code ?? "")
+  const message = String(body?.message ?? "")
+  const http = Number(status)
+  if (http === 429 || http >= 500) return false
+  if (TRANSIENT_CODES.has(code)) return false
+  if (TRANSIENT_WORDS.test(message)) return false
+  if (code === "402") return false
+  if (AUTH_GONE_WORDS.test(message)) return true
+  return http === 401 || code === "401"
+}
+
 /** 解析 `{success, code, message, data}` 信封；`success !== true` 一律抛。 */
 function unwrap(path, status, text) {
   let body
@@ -56,8 +118,9 @@ function unwrap(path, status, text) {
   }
   const code = String(body?.code ?? "")
   if (body?.success !== true) {
-    // ⚠ 未登录的实测形态是 HTTP 200 + {success:false, code:'401', message:'NOT_LOGIN'}
-    if (code === "401" || code === "403" || /NOT_LOGIN/i.test(String(body?.message ?? ""))) {
+    // ⚠ 未登录的实测形态是 HTTP 200 + {success:false, code:'401', message:'NOT_LOGIN'}；
+    //   但同样的形状也会来自风控/限流 ⇒ 判据走 isSignInGone 的白名单，不只看码。
+    if (isSignInGone(status, body)) {
       throw new SignInError(`Accio 未登录或登录已过期（${code || status} ${String(body?.message ?? "")}）`.trim())
     }
     throw new Error(`Accio ${path} 失败（${code || status} ${String(body?.message ?? "")}）`.trim())

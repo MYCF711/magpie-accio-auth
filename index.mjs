@@ -51,8 +51,20 @@ import { beginLogin, isTerminalRefreshError, refreshOnce } from "./src/login.mjs
 import { SignInError, commitInvitation, fetchCatalog, fetchInvitation, fetchUserInfo, fetchUsage } from "./src/api.mjs"
 import { FALLBACK_ENTRIES, liveModels, makeIndex, staticModels } from "./src/models.mjs"
 import { chat } from "./src/chat.mjs"
-import { accountKeyOf, readInviteCode, readInviteSid, readModels, utdid, writeInviteCode, writeModels } from "./src/store.mjs"
+import {
+  SIGNIN_CONFIRM_STRIKES,
+  accountKeyOf,
+  clearSignInGone,
+  noteSignInGone,
+  readInviteCode,
+  readInviteSid,
+  readModels,
+  utdid,
+  writeInviteCode,
+  writeModels,
+} from "./src/store.mjs"
 import { importDesktopLogin } from "./src/desktop.mjs"
+import { launchLoginBrowser } from "./src/browser.mjs"
 
 /** 内嵌图标（自绘 SVG，13 行；不引用厂商素材）。`package.json` 的 `magpie.icon` 是同一份。 */
 /** 登录站点选择 —— 主登录与「邀请码」方法共用同一份。 */
@@ -101,8 +113,15 @@ function resolveInviteChoice(raw) {
 /**
  * 主登录与「邀请码」共用的 callback：
  *   拿凭据 → 取账号名 → 有邀请码就顺手提交一次（老账号已有关系时服务端会忽略）→ 记下这个码。
+ *
+ * ⚠ `log` 必须由调用方传进来：这个函数在模块级，而日志通道挂在插件实例的 `client` 上。
+ *   之前这里直接写 `log(...)` —— 一旦走到「拿不到账号信息」那条 catch，就是
+ *   `ReferenceError: log is not defined`，把一次**成功**的登录报成失败。
+ *
+ * ⚠ `session` 是我们自己拉的那个干净浏览器窗口：登录一结束（成功/失败/超时）就关掉它，
+ *   顺手把一次性 profile 目录删掉 —— 那个目录里装着这次登录的 cookie。
  */
-function loginCallback(started, inviteCode) {
+function loginCallback(started, inviteCode, { log = () => {}, session = null } = {}) {
   return async function callback() {
     try {
       const cred = await started.result
@@ -126,8 +145,24 @@ function loginCallback(started, inviteCode) {
       }
     } catch (e) {
       return { type: "failed", error: String(e?.message ?? e).slice(0, 500) }
+    } finally {
+      // 无论成败都收窗口：失败时留着它只会让用户以为还在等
+      try {
+        session?.close?.()
+      } catch {
+        // 关不掉不影响这次登录的结果
+      }
     }
   }
+}
+
+/** 自己开出来的那个干净窗口的说明文案（用户看得到，要说清「为什么又要登一次」）。 */
+function cleanBrowserNote(browserName) {
+  return (
+    `已用 ${browserName} 打开一个**全新窗口**（独立 profile，读不到你日常浏览器的任何登录态）。\n` +
+    "要添加哪个号，就在这个窗口里登哪个号 —— 它会直接进登录页，不会落到已经登录的账号上。\n" +
+    "登录完这个窗口会自动关上；中途关掉也没关系，重新点一次即可。"
+  )
 }
 
 /**
@@ -147,7 +182,7 @@ const ICON =
 /** 账号目录快照的键（per-account，见 src/store.mjs） */
 const keyOf = (cred) => accountKeyOf(cred?.refresh_token)
 
-export const AccioAuthPlugin = async ({ client } = {}) => {
+export const AccioAuthPlugin = async ({ client, launcher } = {}) => {
   const log = (msg, level = "info") => {
     try {
       client?.app?.log?.({ service: "accio", level, message: msg })
@@ -155,6 +190,10 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
       // 没有日志通道就算了
     }
   }
+
+  // 拉起干净浏览器窗口的那一步。生产走 src/browser.mjs；测试注入一个假的，
+  // 否则「添加账号」这条路径没法在 CI/无 GUI 环境下验证。
+  const openBrowser = typeof launcher === "function" ? launcher : launchLoginBrowser
 
   /** 把续期后的凭据写回 magpie（`client.auth.set` 是整体替换，不是合并）。 */
   const saveAuth = async (cred, prev) => {
@@ -181,6 +220,44 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
   const indexOf = (cred) => {
     const snap = readModels(keyOf(cred))
     return makeIndex(Array.isArray(snap?.entries) ? snap.entries : FALLBACK_ENTRIES)
+  }
+
+  /**
+   * 「登录 Accio」与「邀请码」两条网页登录路径的唯一入口。
+   *
+   * ═══ 为什么不把 `url` 交给 magpie 去开 ═══
+   *
+   * `authorize()` 只回 `{url, method:"auto"}` 时，magpie 拿它开**系统默认浏览器** ——
+   * 那个浏览器里带着用户日常的 Accio 会话，点「添加账号」会直接落到**已经登录的号**上
+   * （主人 2026-10-30 的原话：「添加账号就会导入之前的登录态」）。
+   * 所以这里自己拉一个 `--user-data-dir=<一次性目录>` 的窗口，并回 `opened: true`
+   * 告诉 magpie「页面已经由我打开了，你别再开一遍」（HOOKS.md 陷阱 3）。
+   *
+   * ═══ 起不来浏览器时怎么办 ═══
+   *
+   * **明确报错，不静默退回系统浏览器** —— 退回就等于把「落到旧账号」这个 bug 又放回来，
+   * 而用户完全看不出发生了什么。抛出的错误里带上「装了哪些路径」与「装个 Chrome 再试」。
+   */
+  const startCleanLogin = async ({ region, inviteCode, inviteSid }) => {
+    const started = await beginLogin({ region, inviteCode, inviteSid })
+    let session
+    try {
+      session = await openBrowser(started.url)
+    } catch (e) {
+      started.close() // 浏览器起不来：把回环端口也一起放掉
+      log(`拉起浏览器失败：${e?.message ?? e}`, "warn")
+      throw e
+    }
+    // 用户把窗口关掉 → 立刻以「窗口已关闭」收尾，不让 callback 干等满 10 分钟
+    started.attachBrowserExit(session.exit)
+    log(`已用 ${session.name} 打开干净 profile 的登录窗口：${session.profileDir}`, "info")
+    return {
+      url: started.url,
+      opened: true,
+      instructions: cleanBrowserNote(session.name),
+      method: "auto",
+      callback: loginCallback(started, inviteCode, { log, session }),
+    }
   }
 
   return {
@@ -221,17 +298,13 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
           /**
            * ⚠ **立刻返回**，不能在这里等用户完成登录 —— 真正等的是 callback()。
            *   死等会让双方互等（magpie 要等 url 才开浏览器）。
+           *   但「立刻返回」指的是不等**登录结果**：拉起浏览器本身是同步做完的
+           *   （起不来就当场抛错，而不是把 url 丢给 magpie 用系统浏览器开）。
            */
           async authorize(inputs) {
             const region = inputs?.region === "global" ? "global" : "cn"
             const inviteCode = readInviteCode()
-            const started = await beginLogin({ region, inviteCode, inviteSid: readInviteSid() })
-            return {
-              url: started.url,
-              instructions: started.instructions,
-              method: "auto",
-              callback: loginCallback(started, inviteCode),
-            }
+            return startCleanLogin({ region, inviteCode, inviteSid: readInviteSid() })
           },
         },
         {
@@ -315,13 +388,8 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
             const region = inputs?.region === "global" ? "global" : "cn"
             // sId 只跟「策略里的那个码」成对；用户临时换码时不能拿旧 sId 去配新码
             const inviteSid = code && code === readInviteCode() ? readInviteSid() : ""
-            const started = await beginLogin({ region, inviteCode: code, inviteSid })
-            return {
-              url: started.url,
-              instructions: started.instructions,
-              method: "auto",
-              callback: loginCallback(started, code),
-            }
+            // 与主登录同一条：自己拉干净 profile 的窗口，不借系统浏览器的登录态
+            return startCleanLogin({ region, inviteCode: code, inviteSid })
           },
         },
       ],
@@ -439,13 +507,26 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
         const auth = await getAuth()
         const cred = credentialOf(auth)
         if (!cred) return { error: "未登录", windows: [] }
+        const account = keyOf(cred)
 
         try {
           const u = await fetchUsage(cred)
+          // 读到干净的一次 → 这个账号自愈（magpie 那边也是这么清的）
+          clearSignInGone(account)
           return u
         } catch (e) {
           if (e instanceof SignInError) {
-            return { error: "Accio 登录已失效，请重新登录", windows: [], signIn: "expired" }
+            // ⚠ 一次不算数：`401 NOT_LOGIN` 也可能是风控/限流伪装出来的
+            //   （2026-10-30 实测，见 src/api.mjs 头与 docs/internals.md §13）。
+            //   标死账号要用户人工重登，代价太大 ⇒ 连续两次、隔 ≥1 分钟才确认。
+            const strikes = noteSignInGone(account)
+            if (strikes >= SIGNIN_CONFIRM_STRIKES) {
+              return { error: "Accio 登录已失效，请重新登录", windows: [], signIn: "expired" }
+            }
+            return {
+              error: `${String(e?.message ?? e)}（第 ${strikes}/${SIGNIN_CONFIRM_STRIKES} 次，暂不标记失效）`.slice(0, 300),
+              windows: [],
+            }
           }
           // 上游失败 → 让卡片显示原因（吞成 0 会被当成空号排到路由队首）
           return { error: String(e?.message ?? e).slice(0, 300), windows: [] }
@@ -468,7 +549,7 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
      * 三态降级（方向各自选对）：
      *   ① 整个接口失败   → 退回上次快照；没有快照才退回静态表（**不返回空表**）
      *   ② 单条缺字段     → 不列（`normalizeModel` 里剔除，不猜）
-     *   ③ 登录失效       → 抛 `signIn: "expired"`
+     *   ③ 登录失效       → 抛 `signIn: "expired"`（**连续两次确认后**才抛，见下）
      */
     provider: {
       id: PROVIDER,
@@ -478,24 +559,34 @@ export const AccioAuthPlugin = async ({ client } = {}) => {
         const fallback = staticModels()
         const cred = credentialOf(auth)
         if (!cred) return fallback
+        const account = keyOf(cred)
 
         try {
           const entries = await fetchCatalog(cred)
           if (!entries.length) return fallback
-          writeModels(keyOf(cred), entries)
+          clearSignInGone(account)
+          writeModels(account, entries)
           const live = liveModels(entries)
           return Object.keys(live).length > 0 ? live : fallback
         } catch (e) {
           if (e instanceof SignInError) {
-            throw Object.assign(new Error("Accio 登录已失效，请重新登录"), { signIn: "expired" })
+            // 与 usage 同一套确认：上游说「不认这个 token」不等于「号被吊销」，
+            // 风控限流会回一模一样的报文（docs/internals.md §13）。
+            const strikes = noteSignInGone(account)
+            if (strikes >= SIGNIN_CONFIRM_STRIKES) {
+              throw Object.assign(new Error("Accio 登录已失效，请重新登录"), { signIn: "expired" })
+            }
+            log(`目录拉取报登录失效（第 ${strikes}/${SIGNIN_CONFIRM_STRIKES} 次，暂不标记账号）：${e?.message ?? e}`, "warn")
+          } else {
+            log(`目录拉取失败：${e?.message ?? e}`, "warn")
           }
-          const snap = readModels(keyOf(cred))
+          const snap = readModels(account)
           if (Array.isArray(snap?.entries) && snap.entries.length > 0) {
-            log(`目录拉取失败，回退上次快照：${e?.message ?? e}`, "warn")
+            log("回退上次目录快照", "warn")
             const cached = liveModels(snap.entries)
             if (Object.keys(cached).length > 0) return cached
           }
-          log(`目录拉取失败，回退静态表：${e?.message ?? e}`, "warn")
+          log("回退静态表", "warn")
           return fallback
         }
       },
@@ -522,4 +613,6 @@ export const _internal = {
   liveModels,
   makeIndex,
   FALLBACK_ENTRIES,
+  // 登录回调的收尾逻辑（拿账号名那一步失败时必须仍然算登录成功）
+  loginCallback,
 }

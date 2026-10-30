@@ -10,6 +10,7 @@ import assert from "node:assert/strict"
 import { AccioAuthPlugin } from "../index.mjs"
 import { toStored } from "../src/credential.mjs"
 import { beginLogin } from "../src/login.mjs"
+import { accountKeyOf, noteSignInGone } from "../src/store.mjs"
 
 // ⚠ 测试卫生：把 HOME 指到临时目录再跑（Gyl1219 hub 的同款教训）。
 // 否则 utdid / 模型目录快照会写进本机真实的 ~/.cache/magpie —— 每跑一次测试就多几个文件。
@@ -145,12 +146,20 @@ test("models：上游失败 → 回退（不抛，不返回空表）", async () 
   }
 })
 
-test("models：登录失效 → 抛 signIn: expired（标记账号）", async () => {
+test("models：登录失效**连续两次**才抛 signIn: expired（第一次只报错、不标死账号）", async () => {
   const stub = stubFetch(() => json({ success: false, code: "401", message: "NOT_LOGIN" }))
   try {
     const hooks = await hooksOf()
+    // ① 单次：只回退，不抛
+    const single = { ...STORED, access: JSON.stringify({ ...CRED, refresh_token: `rr-lapse-models-1-${Date.now()}` }) }
+    const models = await hooks.provider.models({ models: {} }, { auth: single })
+    assert.ok(Object.keys(models).length >= 15, "第一次报失效不能打死账号，也不能把模型表弄空")
+
+    // ② 同一账号已经有一条「一分钟前」的旧账 → 这次就是连续第二次，才允许标死
+    const twice = { ...STORED, access: JSON.stringify({ ...CRED, refresh_token: `rr-lapse-models-2-${Date.now()}` }) }
+    noteSignInGone(accountKeyOf(JSON.parse(twice.access).refresh_token), { now: Date.now() - 120_000 })
     await assert.rejects(
-      () => hooks.provider.models({ models: {} }, { auth: STORED }),
+      () => hooks.provider.models({ models: {} }, { auth: twice }),
       (e) => e.signIn === "expired",
     )
   } finally {
@@ -189,13 +198,23 @@ test("usage：未登录 → error + 空 windows（不是抛异常）", async () 
   assert.deepEqual(u.windows, [])
 })
 
-test("usage：登录失效 → signIn expired（卡片提示重新登录）", async () => {
+test("usage：登录失效**连续两次**才 signIn expired（第一次只报错、不标死账号）", async () => {
   const stub = stubFetch(() => json({ success: false, code: "401", message: "NOT_LOGIN" }))
   try {
     const hooks = await hooksOf()
-    const u = await hooks.auth.usage(async () => STORED)
-    assert.equal(u.signIn, "expired")
-    assert.ok(typeof u.error === "string")
+    // ① 单次：不许标 expired —— 风控/限流会伪装成 401 NOT_LOGIN
+    const single = { ...STORED, access: JSON.stringify({ ...CRED, refresh_token: `rr-lapse-usage-1-${Date.now()}` }) }
+    const first = await hooks.auth.usage(async () => single)
+    assert.equal(first.signIn, undefined, "单次 401 不许标 expired")
+    assert.match(first.error, /1\/2/, "要让用户看见「第 1/2 次确认」")
+    assert.deepEqual(first.windows, [])
+
+    // ② 同一账号已有「一分钟前」的旧账 → 这次是连续第二次，才判 expired
+    const twice = { ...STORED, access: JSON.stringify({ ...CRED, refresh_token: `rr-lapse-usage-2-${Date.now()}` }) }
+    noteSignInGone(accountKeyOf(JSON.parse(twice.access).refresh_token), { now: Date.now() - 120_000 })
+    const second = await hooks.auth.usage(async () => twice)
+    assert.equal(second.signIn, "expired")
+    assert.ok(typeof second.error === "string")
   } finally {
     stub.restore()
   }
