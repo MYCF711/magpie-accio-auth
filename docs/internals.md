@@ -515,3 +515,138 @@ https://www.accio-ai.com/login?sId=hKVFtOhL8IqKglYysM8tGA%3D%3D&ic=IC62489146454
 
 `/api/invitation/*` 下试过 8 个候选路径全部 404；客户端 asar 的 API 表里只有
 `invitationQuery`（布尔）与 `invitationCommit`。邀请中心的统计来自 web 前端的另一个后端。
+
+---
+
+## 13 · 「登录已失效」的真伪判定（2026-10-30 真机事故）
+
+### 13.1 现象与判定
+
+主人的原话：「accio 的登录态被退出登录了」。卡片上三个号全变成
+`181****0632 已退出登录 · 开关关`，用户没做任何操作。
+
+**结论：真失效（上游已不接受这几个 token），不是插件伪造的。**
+但同一次排查也证明：上游在**风控限流**时回的是同一批报文 —— 所以判据必须收窄，
+不能只凭「401/403」下结论。
+
+### 13.2 证据链（全部只读，未改 `~/.config/magpie` 下任何东西）
+
+**① 时钟上 token 根本没到期** —— `~/.config/magpie/plugin-auth.json` 的字段是
+`type / refresh / access / expires / accountId / uid`：
+
+| 账号（=`plugin-auth.json` 的键） | accountId | expires | 距排查时刻 |
+|---|---|---|---|
+| `accio` | 189\*\*\*\*8051 | 1795838135000 = 2026-11-28T03:55:35Z | +691 h |
+| `accio#999nnw` | 181\*\*\*\*0632 | 1795841555000 = 2026-11-28T04:52:35Z | +692 h |
+| `accio#v5fo2j` | 181\*\*\*\*6710 | 1795844611000 = 2026-11-28T05:43:31Z | +692.8 h |
+
+⇒ 30 小时前签发、还有 ~28 天有效期。且 `refreshLead` 是 10 分钟，
+**插件从来没对这几个号发起过续期** —— 所以「刷新轮换把号刷死」这条假设在本案不成立。
+
+**② 出事前它们还是好的**：
+
+- `~/.cache/magpie/accio-models__*.json` 三个快照 `at = 2026-10-30T06:27:13Z`（= 本地 14:27），
+  各 15 条模型 —— 目录端点当时成功（`writeModels` 只在 `fetchCatalog` 成功后调用）。
+- `~/.config/magpie/quotas.json` 里三个号的 `at = 2026-10-30T14:32:14+08:00`，积分桶齐全。
+
+**③ 那之后路由日志里 accio 的每一次失败都是 402，不是 401** ——
+`~/.config/magpie/routing/2026-10-30.jsonl` 中 `id` 以 `accio` 开头的 try 共 69 条：
+**51 × status 200、18 × status 429**，18 条的 error 原文逐字相同：
+
+```
+Accio: {"message":"Accio: connection lost mid-reply (Accio: 额度或认证失败（error_code=402 unauthorized）)","type":"api_error"}
+```
+
+最后一条在 `2026-10-30T16:37:56.7912095+08:00`。**路由日志里没有 401** ——
+也就是说「被标退登」不是聊天那一侧引起的，而是额度钩子读取失败。
+
+**④ 谁写的「已退出登录」** —— `~/.config/magpie/logins.json` 三个 accio 条目都是
+`on: true` + `lapsed: "…'s Accio sign-in has expired — sign in again"`。
+lapsed 只有一条来路：magpie 源码 `internal/provider/plugin_usage.go` 的
+`case u.SignIn == "expired"` ⇒ 插件的 `usage()` 钩子**显式**返回了 `signIn: "expired"`，
+即它捕获了 `SignInError`。插件**没有**错标，是上游当时确实回了登录失效。
+（⚠ 该文件里另一条判据 `signInGone` 正则 `sign-in has (expired|lapsed)|sign in again` 只认英文，
+中文文案不会误命中 —— 所以路径唯一。）
+
+**⑤ 上游现在的原文（对照实验，2026-10-30T16:56 本机直连）**：
+
+| 请求 | 真 token（`accio#999nnw`） | 一串垃圾 token |
+|---|---|---|
+| `GET /api/entitlement/currentSubscription?accessToken=…` | `200 {"success":false,"code":"401","message":"NOT_LOGIN"}` | **逐字相同** |
+| `POST /api/llm/config/v2 {"token":…}` | `200 {"success":false,"code":"403","message":"auth failed"}` | **逐字相同** |
+| `POST /api/invitation/query {"accessToken":…}` | `200 {"success":false,"code":"401","message":"NOT_LOGIN"}` | **逐字相同** |
+| `GET /api/entitlement/quota?accessToken=…` | `200 {"success":false,"code":"401","message":"NOT_LOGIN"}` | **逐字相同** |
+| `POST /api/auth/userinfo {"accessToken":…}` | `200 {"success":false,"code":"555","message":"blocked by sentinel rate limit"}` | 同 |
+
+加 `utdid` / `sgcookie` 头**不改变**任何一条 —— 不是缺设备头造成的。
+
+**⑥ 也就是说**：上游对这个 token 的态度与对垃圾 token **完全一致** ⇒ 从插件的位置看，
+这个号确实要重新登录（真失效）。同时第 ⑤ 行的 `555 blocked by sentinel rate limit`
+说明**本机出口 IP 正被阿里 sentinel 风控限流**；风控/限流期间上游回的正是
+`401 NOT_LOGIN` / `403 auth failed`。两种成因从报文上**分不开** ——
+这是本次要收窄判据的全部理由，也是「是不是风控伪装」这个问题**未能证实**的部分
+（要证实得有第二个出口 IP 做对照，本机没有）。
+
+### 13.3 为什么会这样（未证实的假设，写在这里备查）
+
+1. 三个号同一台机器、同一出口 IP 高频使用，月度积分全部耗尽（`每月积分 used: 100 / 剩余 0`），
+   被 sentinel 风控盯上 → 所有 token 一并被拒。**与现象最吻合，但未证实。**
+2. 上游主动吊销（refresh 被别处消费 / 账号被停）。**无证据**：本插件没跑过续期，
+   官方客户端是否在同一时刻登录过未核对。
+3. 「添加账号时借了系统浏览器的登录态 → 新旧号共用会话 → 旧 token 被判重」：
+   这条能解释「多账号互相踩」，但**解释不了本案** —— 三个号的 `seen` 都在 2026-10-29，
+   出事当天没有任何一次登录动作。**未证实，不作为结论。**
+
+### 13.4 判定表（代码即判据）
+
+`src/api.mjs` 的 `isSignInGone(status, body)`，顺序不能换：
+
+| 顺序 | 条件 | 判定 |
+|---|---|---|
+| ① | HTTP 429 / HTTP ≥500 / code ∈ {429,500,501,502,503,504,555,999} / 报文含 sentinel·限流·风控·超时·网关 字样 | **不是**登录失效 |
+| ② | code `402`（Accio 对话流里就带 `unauthorized` 字样） | **不是**（那是没钱） |
+| ③ | 报文明说（`NOT_LOGIN` / `auth failed` / `未登录` / `登录已过期` / `token invalid|expired|revoked` …） | **是** |
+| ④ | 光有 401（HTTP 或 body），没有措辞 | **是**（HTTP 401 的语义就是未认证；`unauthorized` 字样也走这条，因为 402 帧里也带它） |
+| ⑤ | 光有 403（权限 / WAF / 风控都会回它） | **不是** |
+
+外加 `src/store.mjs` 的连续确认：`usage` / `models` 要连续两次（间隔 ≥60 s）都判失效才
+返回/抛 `signIn: "expired"`；单次只把上游原文显示在卡片上。读到干净的一次清零
+（与 magpie 的 `u.Error == ""` 清 lapse 口径一致）。
+
+### 13.5 干净 profile 的浏览器登录（同一事故的第二条诉求）
+
+主人的原话：「添加账号时的浏览器不应该调用能读到 user 登录态的浏览器」。
+
+`authorize()` 原本回 `{url, method:"auto"}` ⇒ magpie 拿 url 开**系统默认浏览器**，
+那里带着用户日常的 Accio 会话 ⇒「添加账号」直接落到老号上。现在：
+
+```
+src/browser.mjs
+  browserCandidates()    Chrome/Chromium 优先，Edge 最后（企业策略最多）
+  findBrowser()          找不到 → noBrowserMessage()：列出找过的路径 + 「装个 Chrome 再试」
+  newProfileDir()        ~/.cache/magpie/accio-login-<pid>-<ts>-<rand>  一次性
+  cleanProfileFlags()    --user-data-dir=<dir> --no-first-run --disable-sync …
+  launchLoginBrowser()   spawn + 返回 { exit, close }；exit 用来发现「用户关窗」
+```
+
+`authorize()` 回 `opened: true`（HOOKS.md 陷阱 3：页面自己开过就别让 magpie 再开），
+`callback` 收尾时 `session.close()` —— 杀进程 + 删 profile（**不复用目录**：
+复用它第二次登录会读到上一次的会话，正是 magicrew 踩过的那个坑）。
+
+⚠ Accio 有 loopback 回调，所以**不需要 CDP**（与 magicrew 的差别）：
+不读页面、不碰 `DevToolsActivePort` / `SingletonLock`，少一半故障面。
+
+### 13.6 关窗与超时的区分（`beginLogin` + `launchLoginBrowser` 的 `exit`）
+
+我们自己起的窗口，退出时必须自己发现，否则 `callback()` 会干等到 10 分钟超时才报「登录超时」。
+`src/browser.mjs` 的 `exit` 兑现 `{ code, signal, ms }`，`src/login.mjs` 据此分三种情形给不同提示：
+
+| `ms`（窗口活了多久） | 回调到了吗 | 提示 | 为什么这样分 |
+|---|---|---|---|
+| — | 到了（`gotCallback`） | 不算失败，照常换 token | 用户顺手关窗时换 token 还在飞 |
+| < 3000 | 没到 | 「窗口一起来就退出了 —— 多半是浏览器不认启动参数，换 Chrome/Chromium」 | 国产 Chromium 系实测会直接退出；这跟用户关窗是两件事 |
+| ≥ 3000 | 没到 | 「登录窗口已关闭 —— 请重新发起登录（关闭不影响已有账号）」 | 用户改主意了 |
+
+注意「回调到了」必须在**发起换 token 之前**置位（`gotCallback = true`），
+否则关窗与换 token 的竞态会把一次成功的登录判成失败（`tests/clean-browser.test.mjs`
+里「回调已经收到之后再关窗，不算失败」钉的就是这一条）。

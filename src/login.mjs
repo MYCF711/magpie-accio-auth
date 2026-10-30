@@ -145,9 +145,40 @@ const TERMINAL_MARKERS = [
   "refresh_token expired", "expired refresh token", "NOT_LOGIN", "not_login",
 ]
 
+/**
+ * **明确不是**「refresh_token 不能用了」的措辞。
+ *
+ * ⚠ 为什么必须先过这一关（2026-10-30 实测）：阿里网关的风控/限流会这样回 ——
+ *   `POST /api/auth/userinfo` → `{"success":false,"code":"555","message":"blocked by sentinel rate limit"}`
+ *   而在**同一个被限流的出口 IP** 上，catalog / entitlement 回的是
+ *   `{"code":"403","message":"auth failed"}` / `{"code":"401","message":"NOT_LOGIN"}`
+ *   —— 与拿一串垃圾 token 打过去**逐字相同**（对照实验见 docs/internals.md §13）。
+ *   ⇒ 「上游说不认识这个 token」≠「这个号被吊销了」，也可能是本机出口被风控。
+ *   终态标记是**不可逆**的（magpie 把账号标死、要人工重登），所以只要沾到
+ *   限流 / 风控 / 超时 / 5xx / 网络 的字样，一律不判终态，留给下一次重试。
+ */
+const TRANSIENT_MARKERS = [
+  "rate limit", "ratelimit", "too many requests", "429", "throttl",
+  "sentinel", "blocked by", "风控", "限流", "访问频繁", "请稍后",
+  "timeout", "timed out", "etimedout", "econnreset", "econnrefused", "enotfound", "eai_again",
+  "fetch failed", "socket hang up", "other side closed", "terminated",
+  "500", "502", "503", "504", "555", "bad gateway", "service unavailable",
+]
+
+/** 这条报错是不是「暂时性」的（限流 / 风控 / 超时 / 网络 / 5xx）。 */
+export function isTransientRefreshError(error) {
+  const lowered = String(error instanceof Error ? error.message : error).toLowerCase()
+  return TRANSIENT_MARKERS.some((m) => lowered.includes(m.toLowerCase()))
+}
+
+/**
+ * 续期失败是否**终态**：只有上游明说 refresh_token 不能用了才算。
+ * ⚠ 顺序要紧：先排「暂时性」再看终态标记 —— 反过来会把风控/超时报文里
+ *   偶然出现的 `not_login` 字样当成终态。
+ */
 export function isTerminalRefreshError(error) {
-  const message = error instanceof Error ? error.message : String(error)
-  const lowered = message.toLowerCase()
+  if (isTransientRefreshError(error)) return false
+  const lowered = String(error instanceof Error ? error.message : error).toLowerCase()
   return TERMINAL_MARKERS.some((m) => lowered.includes(m.toLowerCase()))
 }
 
@@ -208,8 +239,12 @@ const page = (title, message) =>
  *
  * @param {object} [opts]
  * @param {"cn"|"global"} [opts.region] 登录站点
- * @returns {Promise<{url: string, result: Promise<object>, instructions: string, close: () => void}>}
- *   `url` 立刻可用（magpie 会打开它）；`result` 兑现完整凭据。
+ * @returns {Promise<{url: string, result: Promise<object>, instructions: string, close: () => void, attachBrowserExit: (p: Promise<any>) => void}>}
+ *   `url` 立刻可用；`result` 兑现完整凭据。
+ *   `attachBrowserExit(p)` 把**我们自己拉的那个浏览器窗口**的退出信号挂上来
+ *   （`src/browser.mjs` 的 `exit`）：窗口没了而授权回调还没来，就不必干等满 10 分钟
+ *   超时，直接以「登录窗口已关闭」收尾。之所以是挂载而不是构造参数：
+ *   窗口的 `exit` promise 要先有 url（窗口才开得起来）才能拿到，是个先有蛋后有鸡。
  */
 export async function beginLogin({ region = "cn", inviteCode = "", inviteSid = "" } = {}) {
   const site = region === "global" ? "global" : "cn"
@@ -259,6 +294,9 @@ export async function beginLogin({ region = "cn", inviteCode = "", inviteSid = "
     // 先回提示页再后台兑换：用户不必盯着转圈的标签页等换 token。
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
       .end(page("Accio 授权", "授权已收到，可以关闭此页面并返回 magpie。"))
+    // ⚠ 标记「回调已经到了」：此后用户随手关掉窗口**不算**「登录没完成」——
+    //   换 token 还在飞，关窗只是关掉那个标签页而已。
+    gotCallback = true
     exchangeCode({ code, codeVerifier: pkce.verifier, redirectUri, region: site })
       .then((cred) => settle(true, cred))
       .catch((error) => settle(false, error instanceof Error ? error : new Error(String(error))))
@@ -270,6 +308,7 @@ export async function beginLogin({ region = "cn", inviteCode = "", inviteSid = "
     server.close()
   }
   let redirectUri = ""
+  let gotCallback = false
   const settle = (ok, value) => {
     if (settled) return
     settled = true
@@ -306,11 +345,35 @@ export async function beginLogin({ region = "cn", inviteCode = "", inviteSid = "
   const url = buildAuthUrl({ region: site, redirectUri, state, codeChallenge: pkce.challenge, inviteCode, inviteSid })
   const siteLabel = site === "global" ? "国际站（zh.accio.com）" : "中国站（accio-ai.com）"
 
+  // 用户把登录窗口关掉了：回调还没来就直接收尾，给出能照做的原因。
+  // ⚠ 三种情形要分清，提示完全不同：
+  //   · 窗口活了不到 3 秒就退出 → 多半是那个浏览器不认启动参数（换 Chrome/Chromium 试）
+  //   · 用户自己关掉了窗口      → 只是改主意了，重新点一次即可
+  //   · 一直等不到              → 10 分钟超时（另有兜底）
+  const attachBrowserExit = (exit) => {
+    if (!exit || typeof exit.then !== "function") return
+    exit
+      .then((info) => {
+        if (settled || gotCallback) return
+        const why = info?.signal ? `信号 ${info.signal}` : `退出码 ${info?.code ?? "未知"}`
+        const tooQuickly = Number.isFinite(info?.ms) && info.ms < 3000
+        fail(
+          new Error(
+            tooQuickly
+              ? `Accio: 登录窗口一起来就退出了（${why}，${info.ms}ms）—— 多半是这个浏览器不认插件的启动参数。换一个 Chromium 内核的浏览器（Chrome / Chromium）再试一次。`
+              : `Accio: 登录窗口已关闭（${why}），没收到授权回调 —— 请重新发起登录（关闭不影响已有账号）`,
+          ),
+        )
+      })
+      .catch(() => {})
+  }
+
   return {
     url,
     result,
     instructions: `在打开的页面里完成 Accio 登录（${siteLabel}），完成后本窗口自动继续。`,
     close: () => settle(false, new Error("Accio: 登录已取消")),
+    attachBrowserExit,
   }
 }
 

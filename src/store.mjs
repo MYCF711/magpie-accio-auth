@@ -149,3 +149,65 @@ export function accountKeyOf(refreshToken) {
   if (typeof refreshToken !== "string" || refreshToken === "") return "anon"
   return createHash("sha256").update(refreshToken, "utf8").digest("hex").slice(0, 10)
 }
+
+// ── ④ 「登录失效」的连续确认计数（每账号一条）──────────────────────────
+//
+// 为什么不能一次算数：magpie 每次轮询额度都会调 `usage()`，而 `signIn: "expired"`
+// 会让它**把这个号标死、要从卡片上人工重登**。可上游在风控限流时回的
+// `401 NOT_LOGIN` / `403 auth failed`，跟「token 真被吊销了」**逐字一样**
+// （2026-10-30 对照实验，docs/internals.md §13）——
+// 一次抖动就把用户三个号全标成「已退出登录」，代价与收益完全不成比例。
+//
+// 于是：**连续两次、且两次相隔 ≥ `SIGNIN_CONFIRM_GAP_MS`** 都报「登录失效」才算确认
+// （间隔的要求是为了让 `usage` 与 `models` 在同一次轮询里各报一次不算两次）。
+// 期间照常把上游原文回给 magpie 显示，只是**不**打死亡标记。
+//
+// ⚠ 读了干净的一次就清零：magpie 那边也是这么自愈的（源码 plugin_usage.go：
+//   `u.Error == ""` → 清 lapse），两边口径一致。
+export const SIGNIN_CONFIRM_STRIKES = 2
+export const SIGNIN_CONFIRM_GAP_MS = 60_000
+
+function signInFailFile() {
+  return fileOf("signin-fails")
+}
+
+function readSignInFails() {
+  const v = readJson(signInFailFile(), null)
+  return v && typeof v === "object" ? v : {}
+}
+
+/** 这个账号目前累计了几次「连续登录失效」。 */
+export function signInFailsOf(account, now = Date.now()) {
+  const rec = readSignInFails()[account]
+  if (!rec || !Number.isFinite(rec.n)) return 0
+  // 太久没再报（> 1 小时）就当翻篇了，不让一次周一的抖动影响周三
+  if (now - Number(rec.at) > 3600_000) return 0
+  return rec.n
+}
+
+/**
+ * 记一次「上游说登录失效」，返回累计次数。
+ * @param {string} account 账号键（`accountKeyOf`）
+ * @param {{now?:number, gapMs?:number}} [opts]
+ */
+export function noteSignInGone(account, { now = Date.now(), gapMs = SIGNIN_CONFIRM_GAP_MS } = {}) {
+  if (!account) return 0
+  const all = readSignInFails()
+  const rec = all[account]
+  const fresh = !rec || !Number.isFinite(rec.n) || now - Number(rec.at) > 3600_000
+  const n = fresh ? 1 : now - Number(rec.at) >= gapMs ? Number(rec.n) + 1 : Number(rec.n)
+  // 没跨过间隔就不更新 at —— 否则连发两次会把间隔推远、永远确认不了
+  const at = fresh || n > Number(rec.n) ? now : Number(rec.at)
+  all[account] = { n, at }
+  writeJson(signInFailFile(), all)
+  return n
+}
+
+/** 读到干净的一次就清零（账号自愈）。 */
+export function clearSignInGone(account) {
+  if (!account) return false
+  const all = readSignInFails()
+  if (!(account in all)) return false
+  delete all[account]
+  return writeJson(signInFailFile(), all)
+}
