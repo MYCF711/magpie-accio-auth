@@ -211,3 +211,70 @@ export function clearSignInGone(account) {
   delete all[account]
   return writeJson(signInFailFile(), all)
 }
+
+// ── ⑤ 找回「这个 auth 对应账号」的最新记录（续期判终态前用）────────────
+//
+// 为什么需要（Jet Hub 的「按 refresh chain 协调，不按 account」，2026-10-30）：
+// Accio 的刷新**轮换** refresh_token。A、B 两个 magpie 实例（或插件的
+// loader 内硬续期 + 宿主定时续期）同时拿同一份旧 token 去刷时，一个成功、
+// 另一个必然拿到 `invalid_grant`。失败那个如果直接判「登录失效」，就会把
+// **已经被别人续好的好账号标死**。
+//
+// ⇒ 判终态前回读 `plugin-auth.json`：如果这个账号的 `refresh` 已经**不是**
+//   本次用的那一份，说明「他处已续成功」，应当拿最新的那份继续，而不是标死。
+//
+// ⚠ 三条纪律（都是踩过的坑）：
+//   1. 比对必须**按值**（字符串相等）。`credentialOf()` 每次 parse 都产生新对象，
+//      引用比较恒为「不相等」⇒ 会把每一次都误判成「变了」。
+//   2. **读不到 ≠ 变了**：文件正在被 magpie 原子重写、或目录不可读时返回 null，
+//      调用方据此维持原来的终态判断，不许拿「空」当证据。
+//   3. 认不准（多账号且 accountId/uid 都匹配不上）时返回 { changed: "unknown" }，
+//      **不猜** —— 宁可让 magpie 下一轮再试，也不能把 A 的凭据写到 B 头上。
+//
+// @param {string} provider  供应商 id（`accio`）
+// @param {object} auth      本次续期用的那条 magpie 记录（含 refresh/accountId/uid）
+// @returns {{key:string, value:object, changed:true|false} | {changed:"unknown", reason:string} | null}
+export function latestCredentialFor(provider, auth) {
+  if (!auth || typeof auth !== "object") return null
+  const slots = readMagpieAuthSlots(provider)
+  if (slots.length === 0) return null
+
+  const refreshOf = (record) => {
+    if (typeof record?.refresh === "string" && record.refresh !== "") return record.refresh
+    // 兼容手写/旧版记录：refresh 可能只躺在 access 的 JSON 里
+    try {
+      const inner = JSON.parse(record?.access ?? "{}")
+      return typeof inner?.refresh_token === "string" ? inner.refresh_token : ""
+    } catch {
+      return ""
+    }
+  }
+
+  const mine = refreshOf(auth)
+  // ① 按值找到「还是本次用的那一份」⇒ 没变
+  if (mine !== "") {
+    const exact = slots.find((slot) => refreshOf(slot.value) === mine)
+    if (exact) return { key: exact.key, value: exact.value, changed: false }
+  }
+
+  // ② 找「我自己」：accountId（稳定）→ uid → 全池只有一个 accio 槽
+  const hasIdentity = (typeof auth.accountId === "string" && auth.accountId !== "")
+    || (typeof auth.uid === "string" && auth.uid !== "")
+  let pool = []
+  if (typeof auth.accountId === "string" && auth.accountId !== "") {
+    pool = slots.filter((slot) => slot.value?.accountId === auth.accountId)
+  }
+  if (pool.length === 0 && typeof auth.uid === "string" && auth.uid !== "") {
+    pool = slots.filter((slot) => slot.value?.uid === auth.uid)
+  }
+  // 「全池只有一个槽」这条兜底**只在本次记录没有任何身份字段时**才用 ——
+  // 否则「池里只剩另一个账号」会被误认成本次这一条 ⇒ 把 B 的凭据借给 A。
+  if (pool.length === 0 && slots.length === 1 && !hasIdentity) pool = slots
+  // 多账号且认不准：**不猜**，交给调用方当「无法确认」（不标死、下轮再试）
+  if (pool.length !== 1) return { changed: "unknown", reason: `共 ${slots.length} 个 accio 账号槽，认不出本次这一条` }
+
+  const value = pool[0].value
+  const latest = refreshOf(value)
+  if (latest === mine) return { key: pool[0].key, value, changed: false }
+  return { key: pool[0].key, value, changed: true }
+}

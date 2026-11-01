@@ -498,6 +498,27 @@ test("chat：HTTP 401 时续期一次并用新 token 重发", async () => {
   }
 })
 
+test("chat：续期抛终态错误（如「续期成功但写回失败」）→ 原样上抛，不吞成 401", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => new Response("unauthorized", { status: 401 })
+  try {
+    await assert.rejects(
+      () => chat({
+        credential: CRED,
+        body: { model: "qwen-3-8-flash", messages: [{ role: "user", content: "hi" }] },
+        index: INDEX,
+        renew: async () => {
+          throw Object.assign(new Error("续期成功但凭据写回失败，请重新登录"), { signIn: "expired" })
+        },
+      }),
+      (e) => e.signIn === "expired" && /写回失败/.test(e.message),
+      "终态原因必须浮出来，不能被一句 401 盖掉",
+    )
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 // ── 目录 / 额度端点 ─────────────────────────────────────────────────────
 
 test("fetchCatalog：token 在 body；业务失败（HTTP 200 + success:false）抛 SignInError", async () => {

@@ -650,3 +650,118 @@ src/browser.mjs
 注意「回调到了」必须在**发起换 token 之前**置位（`gotCallback = true`），
 否则关窗与换 token 的竞态会把一次成功的登录判成失败（`tests/clean-browser.test.mjs`
 里「回调已经收到之后再关窗，不算失败」钉的就是这一条）。
+
+---
+
+## 14 · Jet Hub 借鉴与「软件优先登录」（2026-10-30，0.1.9）
+
+> 上游参照：`iJetLi/dsh-providers-hub`（本地 `D:/主工作区/tmp/jethub`，depth 1）。
+> 重点读了 `src/accio-oauth.ts`（217 行）、`src/accio-auth.ts`（1008 行）、
+> `src/expiry-sync.ts`（364）、`src/serial-queue.ts`（140）、`src/refresh-failure.ts`（322）。
+
+### 14.1 它怎么开浏览器：系统浏览器，没有干净 profile
+
+- `src/accio-oauth.ts:102` `openBrowser()` → Windows `rundll32.exe url.dll,FileProtocolHandler`；
+  前端 `window.open(loginUrl)` 同样是系统浏览器。
+- accio 分支**不调用** `openIncognitoWindow`（对比 codearts `jet-hub-rpc.ts:4814`、
+  autoclaw `:5713` 都调了）⇒ **这一条不学**；我们 0.1.8 的 `--user-data-dir` 一次性
+  profile 是领先的，0.1.9 继续保留（网页授权那条）。
+- 唯一可学的是它记录的 `cmd /c start` 事故：`&` 被当成命令分隔符，授权 URL 在第一个
+  `&` 处截断 ⇒ 弹「请升级客户端」/ 弹文件管理器 / 回调永不到达。
+  我们的 `spawn(exe, [args])` 不经过 shell，参数原样交给进程，天然规避。
+
+### 14.2 「已有账号就不再要求登录」：它没有
+
+`hasLoggedInAccount`（`src/account-pool.ts:2187`）只用于 `providerCatalogVisible`
+（模型目录可见性门控），与登录无关；点「新建账号」一律起一轮新 OAuth。
+⇒ 主人 2026-10-30 的「无账号才跳转下载软件，有账号直接走软件登录」在 Jet Hub 里
+**没有先例**，是本仓库自己设计的（见 §14.4）。
+
+### 14.3 账号池与续期：哪些抄、哪些不抄
+
+| 维度 | Jet Hub 的做法 | 本仓库的对应 |
+|---|---|---|
+| 账号元数据 | `$DSH_HOME/jet-hub/state.json` 的 `accounts[]`（id/provider/nickname/enabled/credentialRef/createdAt/expiresAt?/refreshable） | magpie 的 `~/.config/magpie/plugin-auth.json`：`accio` / `accio#<slot>`，字段 `type/refresh/access/expires/accountId/uid` |
+| 凭据本体 | DSH credential store，按 `credentialRef` 每账号一个 | 同一条记录里的 `access`（JSON 字符串），**只有 magpie 一份**（不复制） |
+| 续期调度 | `refreshAll` 每 30 分钟 + 启动首轮 | magpie 的 `refreshLead`（我们 10 分钟）+ `host.js` 的 `fresh()`，登录/请求前自动续 |
+| 并发串行 | `SerialQueue` per `credentialRef` | `refreshOnce` 的 in-flight Map（键 = client_id + refresh_token 链） |
+| 锁内重读 | `refreshCredentialUnderLock`：拿到锁后重读，已被他处续期就跳过 | magpie 宿主 `renewLocked` 已等价实现（`host.js:2287-2310`，跨进程锁文件 `plugin-auth.json.renew-<hash>.lock`） |
+| 判终态前重读 | `refreshAll` catch 里比较 `latest.refresh_token !== 本次用的` | 0.1.9 的 `latestCredentialFor()`（**补的是 loader 内续期，不走宿主锁**） |
+| `save()` 失败 | = 终态（`expiry-sync.ts:333-365`），因为旧 refresh 已被服务端消费 | 0.1.9 的 `renew(..., {persistRequired:true})`（仅 chat 硬续期） |
+| 失败退避 | 宿主 `unrenewed` 记 30 分钟 | magpie 的 `RENEW_RETRY`，插件不自建调度器 |
+
+**结论：不新建账号池。** magpie 已经是我们的账号池；插件只按「凭据链」索引自己的缓存。
+
+### 14.4 「软件优先」登录分流（0.1.9 的设计）
+
+主人原话：「无账号才跳转下载软件，有账号直接走软件登录」。
+「账号」= **本机 Accio 客户端里的登录态**（`%APPDATA%\Accio\credentials.enc` + `Local State`），
+**不是** magpie 账号列表（2026-10-30 与 Lead 确认的口径）。
+
+方法表（**下标不许删**：magpie 用 `auth.methods[method]` 下标选方法）：
+
+```
+[0] 登录 Accio（阿里 Accio Work）        ← 软件优先自动分流（无 prompts）
+[1] 登录 Accio（网页授权，不装客户端）    ← 0.1.8 的干净窗口；原「从本机客户端导入」槽
+[2] Accio 邀请码                        ← 不变
+```
+
+`[0] authorize()` 的两条分支：
+
+| 本机状态 | 判据 | 行为 |
+|---|---|---|
+| 已登录 | `hasDesktopLogin()` = true | `importDesktopLogin()` → `fetchUserInfo` 验证 → `{type:"success"}`（0 交互、opened:true）；文件在但读不出 / 凭据失效 → failed，让用户在客户端重登 |
+| 装了没登录 | `hasDesktopApp()` = true | `opened:true`，提示「打开客户端登录一次」，`callback` 轮询等登录（≤10 分钟）后导入 |
+| 没装 | 两者皆 false | `{url: DOWNLOAD_PAGE_CN, opened:false}` 打开下载页；`callback` 里 `waitForDesktopLogin()` 每 3s 轮询、最长 10 分钟；出现登录态 → 导入；超时 → failed「装好登录后再点一次」 |
+
+下载页实测（2026-10-30）：`GET https://www.accio-ai.com/work` → 200 / 12,102 B，
+`GET https://www.accio.com/work` → 200 / 21,094 B，页面内含 `DownloadUrl` / `DownloadConfig` /
+`download.accio.com/package/v0.36…` / 「Windows (x64)」；官方安装文档
+（`zh.accio.com/wow/doc-help-install.html`）的「下载桌面客户端」也指向 `www.accio.com/work`。
+
+⚠ 三条纪律：
+1. **只在 `authorize()` / `callback()`（用户点击）里读客户端**，绝不在插件加载时读 ——
+   社区 review #522 的「用户删掉的号自己回来」就是自动导入造成的；
+2. 导入前必须 `userinfo` 验证：客户端文件可能是**已失效**的登录态；
+3. 等到登录后导入，也不「顺手创建账号」—— `authorize` 本来就是用户点出来的动作。
+
+### 14.5 身份漂移：`uid` 每续期一次换一个（0.1.9 修复）
+
+实测（2026-10-30，真机 `plugin-auth.json`）：
+
+```
+access_token 长度 32、split('.') 长度 1  ⇒ 不是 JWT
+identityOf() 永远走 sha256(refresh_token) 分支
+刷新会轮换 refresh_token ⇒ 每次续期 uid 从 sha256:xxxx 变成另一个
+```
+
+且 `toStored(cred, prev)` 旧实现写 `accountId: typeof cred.accountId === "string" ? cred.accountId : ""`，
+而续期路径的 `cred` 没有 `accountId`（那是 `userinfo` 才有的）⇒ **卡片手机号被抹成空串**。
+
+0.1.9 起：`toStored` 在 `prev` 存在时承接 `accountId` / `uid`（续的是同一个号）；
+新登录（prev 为空）仍按凭据生成。测试：`tests/refresh-chain.test.mjs` 末两条。
+
+### 14.6 续期「按 chain 协调」的具体判据
+
+`src/store.mjs` 的 `latestCredentialFor(provider, auth)`：
+
+1. 按值找 `refresh === 本次用的` → `changed:false`（链没变 → 维持终态）；
+2. 找不到 → 按 `accountId`（稳定）→ `uid` → 「全池唯一且本次无身份字段」定位；
+3. 定位到的槽 `refresh` ≠ 本次 → `changed:true`（他处已续 → 用最新的）；
+4. 多账号认不准 → `{changed:"unknown"}`（不标死、抛普通错误）；
+5. `plugin-auth.json` 读不到 → `null`（**不得**据此判「变了」，维持终态）。
+
+`index.mjs` 的 `renew()` 在 `isTerminalRefreshError` 命中后才做这一步；读到的 `changed:true`
+会 `credentialOf(latest.value)` 直接返回，连 `saveAuth` 都不再写一次（最新的已经在盘上）。
+
+**真机实测（2026-10-30 19:0x，本机）**：
+
+```
+hasDesktopLogin() = true
+importDesktopLogin() = ok（expires 2026-11-29T09:21:49Z，region=cn）
+methods[0].authorize() → opened=true，0 ms（不弹浏览器）
+methods[0].callback()  → success，580 ms（importDesktopLogin + userinfo 全走完）
+accountId = 1********1@qq.com
+```
+
+⇒ 「有账号直接走软件登录」这条在本机是**完整可用**的，不需要网页登录。

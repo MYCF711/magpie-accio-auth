@@ -43,6 +43,66 @@ export function hasDesktopLogin() {
   return existsSync(join(dir, "credentials.enc")) && existsSync(join(dir, "Local State"))
 }
 
+/**
+ * 本机是否装过 Accio 客户端（哪怕从没登录过）。
+ *
+ * 为什么要和 {@link hasDesktopLogin} 分开：装了没登录的用户，`credentials.enc` 还不存在，
+ * 但**不该让他再去下载一次** —— 应该提示他打开客户端登录。判据取客户端会写的两个目录：
+ *   · `%APPDATA%\Accio`（Electron 的 userData，首次启动就有）
+ *   · `%LOCALAPPDATA%\Accio`（安装器 / launcher-telemetry）
+ */
+export function hasDesktopApp() {
+  if (process.platform !== "win32") return false
+  try {
+    if (existsSync(desktopDataDir())) return true
+    const local = process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")
+    return existsSync(join(local, "Accio"))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 等本机客户端出现登录态 —— 给「没装客户端 → 跳下载页 → 装好登录 → **同一次点击**
+ * 自动接上」那条路径用（主人 2026-10-30：「无账号才跳转下载软件」）。
+ *
+ * 为什么不是「弹个错误让用户再点一次」：装包 + 登录是分钟级动作，再点一次等于
+ * 让用户自己记着回来；而客户端登录完成的唯一可靠信号就是 `credentials.enc` 出现，
+ * 轮询它最便宜（两次 existsSync，不发网络请求）。
+ *
+ * ⚠ 上限由调用方给（我们传 `LOGIN_TIMEOUT_MS` = 10 分钟）；超时返回 `false`，
+ *   由调用方给出「装好登录后再点一次」的明确文案，不静默成功。
+ *
+ * @param {{timeoutMs?:number, intervalMs?:number, probe?:()=>boolean, sleep?:(ms:number)=>Promise<void>, now?:()=>number}} [opts]
+ *   测试注入 `probe` / `sleep` / `now`，不真的等 10 分钟。
+ * @returns {Promise<boolean>} 是否等到了登录态
+ */
+export async function waitForDesktopLogin({
+  timeoutMs = 10 * 60_000,
+  intervalMs = 3000,
+  probe = hasDesktopLogin,
+  // ⚠ 定时器 unref：用户在 magpie 里取消登录时，这个 callback 可能还在等；
+  //   不 unref 会让宿主进程为了它多活最多 10 分钟（宿主本来就常驻，但别添乱）。
+  sleep = (ms) => new Promise((resolve) => {
+    const t = setTimeout(resolve, ms)
+    t.unref?.()
+  }),
+  now = () => Date.now(),
+} = {}) {
+  const deadline = now() + Math.max(0, timeoutMs)
+  // 先看一眼：点进这条分支时可能客户端刚好登录完（或用户本来就是「装了但没登录」）
+  for (;;) {
+    try {
+      if (probe()) return true
+    } catch {
+      // 探不动就当作「还没有」，继续等
+    }
+    const left = deadline - now()
+    if (left <= 0) return false
+    await sleep(Math.min(intervalMs, left))
+  }
+}
+
 /** DPAPI(CurrentUser) 解一段密文 —— 只能 Windows，借 PowerShell。 */
 function dpapiDecrypt(cipher) {
   if (process.platform !== "win32") throw new Error("DPAPI 只在 Windows 上可用")
