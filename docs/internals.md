@@ -92,10 +92,10 @@ https://www.accio-ai.com/login?return_url=http%3A%2F%2F127.0.0.1%3A51918%2Fauth%
 ### 2.3 装进正式实例（magpie 0.1.1978，真实 config）
 
 ```
-$ magpie plugin add 'D:\主工作区\projects\magpie-accio-auth'
-✓ added D:\主工作区\projects\magpie-accio-auth
+$ magpie plugin add '<WORKSPACE>\projects\magpie-accio-auth'
+✓ added <WORKSPACE>\projects\magpie-accio-auth
 …
-D:\主工作区\projects\magpie-accio-auth (Accio 0.1.0)  on
+<WORKSPACE>\projects\magpie-accio-auth (Accio 0.1.0)  on
   accio (Accio, 15 models)  not signed in · magpie plugin login accio
 ```
 
@@ -655,7 +655,7 @@ src/browser.mjs
 
 ## 14 · Jet Hub 借鉴与「软件优先登录」（2026-10-30，0.1.9）
 
-> 上游参照：`iJetLi/dsh-providers-hub`（本地 `D:/主工作区/tmp/jethub`，depth 1）。
+> 上游参照：`iJetLi/dsh-providers-hub`（本地 `<WORKSPACE>/tmp/jethub`，depth 1）。
 > 重点读了 `src/accio-oauth.ts`（217 行）、`src/accio-auth.ts`（1008 行）、
 > `src/expiry-sync.ts`（364）、`src/serial-queue.ts`（140）、`src/refresh-failure.ts`（322）。
 

@@ -107,9 +107,9 @@ curl -s "https://phoenix-gw.alibaba.com/api/entitlement/currentSubscription?acce
 本机装/重载：
 
 ```bash
-magpie plugin add 'D:\主工作区\projects\magpie-accio-auth'   # 首次
-magpie plugin off 'D:\主工作区\projects\magpie-accio-auth'    # 改完代码后重载
-magpie plugin on  'D:\主工作区\projects\magpie-accio-auth'
+magpie plugin add '<WORKSPACE>\projects\magpie-accio-auth'   # 首次
+magpie plugin off '<WORKSPACE>\projects\magpie-accio-auth'    # 改完代码后重载
+magpie plugin on  '<WORKSPACE>\projects\magpie-accio-auth'
 magpie plugin list | grep -A2 accio
 ```
 

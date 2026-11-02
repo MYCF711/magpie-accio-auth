@@ -80,7 +80,7 @@ magpie：任何支持 OpenAI 协议的 agent 都能选它的模型。
 magpie plugin add github:MYCF711/magpie-accio-auth
 
 # 本地目录（改代码时）—— ⚠ 路径安装的卡片标题就是那个路径
-magpie plugin add D:\主工作区\projects\magpie-accio-auth
+magpie plugin add <WORKSPACE>\projects\magpie-accio-auth
 
 # 从 npm（发布之后）
 magpie plugin add accio-auth

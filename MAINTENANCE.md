@@ -15,7 +15,7 @@
 | npm 包名 | `accio-auth`（与包内 name 不同，发布用这个） |
 | 当前版本 | `0.1.9`（工作区里已 bump，未提交、未打 tag） |
 | 承载的供应商 | `accio`（阿里 Accio Work） |
-| 上游 | magpie（`yetone/magpie`）插件协议；本机源码 checkout `D:\主工作区\projects\magpie` |
+| 上游 | magpie（`yetone/magpie`）插件协议；本机源码 checkout `<WORKSPACE>\projects\magpie` |
 | 关联仓库 | `magpie-plugin-scaffold`（脚手架 / HOOKS.md / UPDATING.md / check.mjs） |
 | 参考实现 | `magpie-magicrew-auth`（浏览器登录 / 登录方式形态）、`magpie-trustoken-auth`（状态码语义翻译）、`iJetLi/dsh-providers-hub`（续期按 refresh 链协调，0.1.9 起） |
 
@@ -47,7 +47,7 @@ c45d9ee fix: carry sId with the invitation code, matching the official share lin
 ## 三、下一步
 
 1. 复核本分支的改动（`git diff`）→ 跑两道门（见第五节）→ Lead 决定合入与发版（0.1.9）。
-2. **发版前必须确认**：本机 magpie 里装的是本地目录 spec（`D:\主工作区\projects\magpie-accio-auth`），
+2. **发版前必须确认**：本机 magpie 里装的是本地目录 spec（`<WORKSPACE>\projects\magpie-accio-auth`），
    改完要 `magpie plugin off <spec>` + `on <spec>` 或重启 magpie 才生效（坑 20）。
 3. 未决（等上游/等证据，别猜）：
    - 0.1.8 之前的三个 accio 账号当前仍被上游拒绝（`401 NOT_LOGIN` / `403 auth failed`，与垃圾 token 同形）。
@@ -77,9 +77,9 @@ c45d9ee fix: carry sId with the invitation code, matching the official share lin
 ## 五、交付前自检
 
 ```bash
-cd "D:/主工作区/projects/magpie-accio-auth"
+cd "<WORKSPACE>/projects/magpie-accio-auth"
 node --test tests/*.test.mjs                       # 全过（当前 129 条）
-node "D:/主工作区/projects/magpie-plugin-scaffold/scripts/check.mjs" .   # 退出码 0
+node "<WORKSPACE>/projects/magpie-plugin-scaffold/scripts/check.mjs" .   # 退出码 0
 npm pack --dry-run                                 # 打包面里文档齐全
 node scripts/check-maintenance.mjs                 # 发布前：改了代码有没有 bump / tag
 ```
@@ -90,9 +90,9 @@ node scripts/check-maintenance.mjs                 # 发布前：改了代码有
 不要手搓 curl —— 判据（`isSignInGone`）就在 `src/api.mjs` 里，手搓容易跟代码走偏：
 
 ```bash
-node -e "const {fetchUsage}=await import('file:///D:/主工作区/projects/magpie-accio-auth/src/api.mjs'); \
+node -e "const {fetchUsage}=await import('file:///<WORKSPACE>/projects/magpie-accio-auth/src/api.mjs'); \
 const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.env.USERPROFILE+'/.config/magpie/plugin-auth.json','utf8')); \
-const {credentialOf}=await import('file:///D:/主工作区/projects/magpie-accio-auth/src/credential.mjs'); \
+const {credentialOf}=await import('file:///<WORKSPACE>/projects/magpie-accio-auth/src/credential.mjs'); \
 console.log(await fetchUsage(credentialOf(j['accio'])).then(()=>'还有效').catch(e=>e.name+': '+e.message))" --input-type=module
 ```
 
